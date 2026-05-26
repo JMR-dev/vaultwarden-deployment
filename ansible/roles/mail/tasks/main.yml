@@ -1,0 +1,52 @@
+---
+- name: Load msmtp credentials from Secret Manager
+  ansible.builtin.set_fact:
+    msmtp_secrets: >-
+      {{ lookup('community.general.pipe',
+                'gcloud secrets versions access latest --secret=' + secret_prefix + 'msmtp --project=' + gcp_project)
+         | from_yaml }}
+  no_log: true
+
+- name: Install msmtp config
+  ansible.builtin.template:
+    src: msmtprc.j2
+    dest: /etc/msmtprc
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+
+- name: Wire msmtp as system sendmail
+  ansible.builtin.file:
+    src: /usr/bin/msmtp
+    dest: /usr/sbin/sendmail
+    state: link
+    force: true
+
+- name: Configure root mail alias
+  ansible.builtin.template:
+    src: aliases.j2
+    dest: /etc/aliases
+    owner: root
+    group: root
+    mode: "0644"
+  notify: rebuild aliases
+
+# OnFailure email helper — units that fail trigger
+# status-email-root@<unit>.service which mails the failure with journal context.
+- name: Install systemd-email helper
+  ansible.builtin.copy:
+    src: systemd-email
+    dest: /usr/local/sbin/systemd-email
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install status-email-root@.service template
+  ansible.builtin.copy:
+    src: status-email-root@.service
+    dest: /etc/systemd/system/status-email-root@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd

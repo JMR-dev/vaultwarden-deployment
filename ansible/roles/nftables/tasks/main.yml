@@ -1,0 +1,25 @@
+---
+- name: Install nftables base ruleset
+  ansible.builtin.template:
+    src: main.nft.j2
+    dest: /etc/nftables/main.nft
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "nft -c -f %s"
+  notify: restart nftables
+
+- name: Point nftables.service at our ruleset
+  ansible.builtin.copy:
+    dest: /etc/sysconfig/nftables.conf
+    content: "include \"/etc/nftables/main.nft\"\n"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart nftables
+
+- name: Enable nftables
+  ansible.builtin.systemd:
+    name: nftables.service
+    enabled: true
+    state: started

@@ -1,0 +1,19 @@
+# Managed by Ansible.
+[commands]
+upgrade_type = security
+random_sleep = 0
+network_online_timeout = 60
+download_updates = yes
+apply_updates = yes
+# Reboot only when a package needs it; the systemd timer already pins the
+# schedule to the maintenance window.
+reboot = when-needed
+reboot_command = "shutdown -r +5 'Rebooting after applying security updates'"
+
+[emitters]
+# stdio → captured by the systemd journal. OnFailure drop-in mails the journal
+# on failures; Healthchecks.io pings (ExecStartPost) cover the success signal.
+emit_via = stdio
+
+[base]
+debuglevel = 1

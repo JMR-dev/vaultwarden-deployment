@@ -1,0 +1,46 @@
+[Unit]
+Description=Caddy reverse proxy (custom build with googleclouddns + Coraza)
+Wants=network-online.target
+After=network-online.target vaultwarden.service
+Requires=vaultwarden.service
+OnFailure=status-email-root@%n.service
+
+[Container]
+# Custom build pushed by cloudbuild.yaml. :latest is what `podman
+# auto-update` watches; bump deliberately by re-tagging a known-good <sha>
+# tag as :latest in Artifact Registry. The repo grants
+# roles/artifactregistry.reader to allUsers (declared in Pulumi) so the
+# host pulls without auth.
+#
+# The image path is templated from `caddy_image` which Ansible receives via
+# --extra-vars at deploy time, sourced from the Pulumi output `imageRepo`.
+Image={{ caddy_image }}
+ContainerName=caddy
+AutoUpdate=registry
+Network=vaultwarden.network
+
+# 443 on the host. The sysctl ip_unprivileged_port_start=443 (set by the
+# podman role) lets rootless caddy bind without CAP_NET_BIND_SERVICE.
+PublishPort=443:443
+
+# Caddyfile bind-mount, plus Caddy's data dir (certs, OCSP staples) and
+# log dir (access log + Coraza audit). All :Z under SELinux.
+Volume=%h/caddy/Caddyfile:/etc/caddy/Caddyfile:Z,ro
+Volume=%h/caddy/data:/data:Z
+Volume=%h/caddy/logs:/var/log/caddy:Z
+
+# VAULT_FQDN + WG_SUBNET come from the Ansible-rendered env file.
+EnvironmentFile=%h/caddy/caddy.env
+
+# GCP SA JSON for DNS-01. Podman mounts the secret at /run/secrets/gcp-sa-dns
+# by default for type=mount.
+Environment=GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp-sa-dns
+Secret=gcp-sa-dns,type=mount
+
+[Service]
+Restart=always
+RestartSec=10s
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

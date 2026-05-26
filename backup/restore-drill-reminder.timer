@@ -1,0 +1,10 @@
+[Unit]
+Description=Quarterly reminder to run the restic restore drill
+
+[Timer]
+# First day of Jan/Apr/Jul/Oct at 09:00 local.
+OnCalendar=*-01,04,07,10-01 09:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

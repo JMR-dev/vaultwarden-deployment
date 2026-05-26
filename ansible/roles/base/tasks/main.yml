@@ -1,0 +1,55 @@
+---
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+- name: Install EPEL release
+  ansible.builtin.package:
+    name: epel-release
+    state: present
+
+- name: Install base packages
+  ansible.builtin.package:
+    name: "{{ base_packages }}"
+    state: present
+
+- name: Install EPEL packages
+  ansible.builtin.package:
+    name: "{{ epel_packages }}"
+    state: present
+
+# Hetzner cloud-init mounts the attached volume at /mnt/HC_Volume_<id>. We
+# don't care about the ugly path; we bind-mount it to /data so every other
+# role + every quadlet sees the same stable path.
+- name: Discover Hetzner volume mount
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      findmnt -ln -o TARGET /mnt/HC_Volume_* | head -n1
+  register: hc_volume_mount
+  changed_when: false
+  failed_when: hc_volume_mount.stdout == ""
+
+- name: Ensure /data exists
+  ansible.builtin.file:
+    path: "{{ vault_data_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Bind-mount Hetzner volume to /data
+  ansible.posix.mount:
+    src: "{{ hc_volume_mount.stdout }}"
+    path: "{{ vault_data_dir }}"
+    fstype: none
+    opts: bind,nofail,x-systemd.requires-mounts-for={{ hc_volume_mount.stdout }}
+    state: mounted
+
+- name: Verify SELinux is enforcing
+  ansible.builtin.command: getenforce
+  register: getenforce
+  changed_when: false
+  failed_when: getenforce.stdout != "Enforcing"

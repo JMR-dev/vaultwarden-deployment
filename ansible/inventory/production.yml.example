@@ -1,0 +1,33 @@
+# Example inventory for the production stack. Copy and fill before use.
+#
+# Diffs from disposable: hostname, FQDN, and (eventually) production-only
+# Healthchecks URLs in secrets/healthchecks.env.
+
+all:
+  hosts:
+    vault:
+      ansible_host: REPLACE_WITH_IPV4_FROM_PULUMI
+      ansible_user: ansible
+      ansible_python_interpreter: /usr/bin/python3
+  vars:
+    vault_fqdn: vault.example.com
+    operator_email: jason.ross841@gmail.com
+
+    vault_user: vaultwarden
+    vault_uid: 1100
+    vault_data_dir: /data
+
+    wg_interface: wg0
+    wg_port: 51820
+    wg_server_address: "10.42.0.1/24"
+    wg_subnet: "10.42.0.0/24"
+    wg_peers:
+      - name: laptop
+        pubkey: REPLACE_WITH_LAPTOP_PUBKEY
+        address: 10.42.0.10
+      - name: phone
+        pubkey: REPLACE_WITH_PHONE_PUBKEY
+        address: 10.42.0.11
+
+    dnf_reboot_window: "04:00"
+    dnf_reboot_dow: "Tue"

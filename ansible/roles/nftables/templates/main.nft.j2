@@ -1,0 +1,48 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible.
+#
+# Host-level filter layer. Hetzner Cloud Firewall (L3/L4, configured in Pulumi)
+# is the outer redundant layer. Fail2Ban hooks into this table at runtime and
+# adds f2b-<jail> chains with a jump from input.
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+
+        iif "lo" accept
+
+        # ICMP / ICMPv6 — diagnostics.
+        ip protocol icmp accept
+        ip6 nexthdr ipv6-icmp accept
+
+        # HTTPS — public.
+        tcp dport 443 accept
+
+        # WireGuard — public.
+        udp dport {{ wg_port }} accept
+
+        # SSH — WG subnet only. Public SSH is closed at this layer regardless
+        # of what Cloud Firewall allows (defence-in-depth).
+        ip saddr {{ wg_subnet }} tcp dport 22 accept
+
+        # Fail2Ban inserts a jump to f2b-<jail> chains at runtime; nothing to
+        # declare here.
+
+        # Everything else: log a sampled drop for debugging, then drop.
+        limit rate 5/minute log prefix "nft-drop: " level info
+        counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

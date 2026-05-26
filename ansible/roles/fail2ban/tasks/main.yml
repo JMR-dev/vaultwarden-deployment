@@ -1,0 +1,48 @@
+---
+- name: Install jail config
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart fail2ban
+
+- name: Install vaultwarden filter
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: filter-vaultwarden.conf,       dest: /etc/fail2ban/filter.d/vaultwarden.conf }
+    - { src: filter-vaultwarden-admin.conf, dest: /etc/fail2ban/filter.d/vaultwarden-admin.conf }
+  notify: restart fail2ban
+
+- name: Ensure vaultwarden log exists for the jail to tail
+  ansible.builtin.file:
+    path: "{{ vault_data_dir }}/vaultwarden.log"
+    state: touch
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0640"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Enable fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban.service
+    enabled: true
+    state: started
+
+- name: OnFailure email for fail2ban
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/fail2ban.service.d/onfailure.conf
+    content: |
+      [Unit]
+      OnFailure=status-email-root@%n.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd

@@ -1,0 +1,20 @@
+[Unit]
+Description=Vaultwarden backup to R2
+Wants=network-online.target
+After=network-online.target vaultwarden.service
+OnFailure=status-email-root@%n.service
+
+[Service]
+Type=oneshot
+User=vaultwarden
+Group=vaultwarden
+WorkingDirectory=/data
+EnvironmentFile=/etc/vaultwarden/restic.env
+EnvironmentFile=/etc/vaultwarden/healthchecks.env
+ExecStart=/usr/local/sbin/vaultwarden-backup
+# Only fires if ExecStart succeeded. Missed Healthchecks ping → alert.
+ExecStartPost=/usr/bin/curl -fsS -m 10 --retry 3 ${HC_BACKUP_URL}
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

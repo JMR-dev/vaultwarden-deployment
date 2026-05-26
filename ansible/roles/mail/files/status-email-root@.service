@@ -1,0 +1,9 @@
+[Unit]
+Description=Email root the journal for failed unit %i
+After=network-online.target
+Requires=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/systemd-email %i
+User=root

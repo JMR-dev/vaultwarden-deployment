@@ -1,0 +1,66 @@
+---
+# wireguard-tools comes from EPEL and was installed by the base role.
+
+- name: Load WG server private key from Secret Manager
+  ansible.builtin.set_fact:
+    wireguard_secrets: >-
+      {{ lookup('community.general.pipe',
+                'gcloud secrets versions access latest --secret=' + secret_prefix + 'wireguard --project=' + gcp_project)
+         | from_yaml }}
+  no_log: true
+
+- name: Ensure /etc/wireguard exists
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install wg0.conf
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: "/etc/wireguard/{{ wg_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: restart wg-quick
+  no_log: true
+
+# IP forwarding is required if peers need to reach beyond the host. For the
+# admin/SSH-gating use case that's not needed, but enable v4+v6 anyway so
+# adding a peer-to-peer or kid-LAN topology later is a config flip not a
+# kernel-knob hunt.
+- name: Enable IPv4 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_file: /etc/sysctl.d/20-vaultwarden-wireguard.conf
+    state: present
+    reload: true
+
+- name: Enable IPv6 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "1"
+    sysctl_file: /etc/sysctl.d/20-vaultwarden-wireguard.conf
+    state: present
+    reload: true
+
+- name: Enable wg-quick at boot
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ wg_interface }}.service"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: OnFailure email for wg-quick
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/wg-quick@{{ wg_interface }}.service.d/onfailure.conf"
+    content: |
+      [Unit]
+      OnFailure=status-email-root@%n.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd

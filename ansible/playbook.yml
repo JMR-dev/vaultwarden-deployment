@@ -1,0 +1,42 @@
+---
+# Site playbook. Apply with:
+#
+#   ansible-galaxy install -r requirements.yml
+#   ansible-playbook -i inventory/disposable.yml playbook.yml
+#
+# Operator's age key must be readable at $SOPS_AGE_KEY_FILE
+# (default ~/.config/sops/age/keys.txt) so the secrets role can decrypt.
+
+- name: Vaultwarden host configuration
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Verify SELinux is enforcing
+      ansible.builtin.command: getenforce
+      changed_when: false
+      register: selinux_status
+      failed_when: "'Enforcing' not in selinux_status.stdout"
+
+  roles:
+    - role: base
+      tags: [base]
+    - role: podman
+      tags: [podman]
+    - role: mail
+      tags: [mail]
+    - role: wireguard
+      tags: [wireguard, network]
+    - role: nftables
+      tags: [nftables, network]
+    - role: fail2ban
+      tags: [fail2ban]
+    - role: dnf_automatic
+      tags: [dnf_automatic, updates]
+    - role: secrets
+      tags: [secrets]
+    - role: quadlets
+      tags: [quadlets]
+    - role: backup
+      tags: [backup]

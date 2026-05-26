@@ -1,0 +1,79 @@
+# Caddy config for the Vaultwarden reverse proxy.
+#
+# Two non-obvious things:
+#
+#   1. Coraza runs DetectionOnly by design (see plan). The WAF observes
+#      and audit-logs; it does not block. Flipping to On would silently
+#      false-positive on attachment uploads and Sends — encrypted payloads
+#      look exactly like the things CRS is trained to flag.
+#
+#   2. /admin is matched into a 404 outside the WG subnet. Returning 404
+#      (not 401/403) hides the route's existence from public scanners.
+#      Vaultwarden's ADMIN_TOKEN is unset by default anyway, but this keeps
+#      the panel inaccessible even if a future change re-enables it.
+
+{
+    # Required for Coraza to plug into the request pipeline before
+    # reverse_proxy. See coraza-caddy README.
+    order coraza_waf first
+}
+
+{$VAULT_FQDN} {
+    tls {
+        # googleclouddns reads the project_id from the SA JSON pointed at
+        # by GOOGLE_APPLICATION_CREDENTIALS — no explicit project flag needed.
+        dns googleclouddns
+    }
+
+    encode zstd gzip
+
+    coraza_waf {
+        directives `
+            Include @coraza.conf-recommended
+            Include @crs-setup.conf.example
+            Include @owasp_crs/*.conf
+            SecRuleEngine DetectionOnly
+            SecAuditEngine RelevantOnly
+            SecAuditLog /var/log/caddy/coraza-audit.log
+            SecAuditLogParts ABIJDEFHZ
+            SecAuditLogFormat JSON
+        `
+    }
+
+    # /admin from a WG-subnet client → reverse proxy normally.
+    @admin_from_wg {
+        path /admin*
+        remote_ip {$WG_SUBNET}
+    }
+    handle @admin_from_wg {
+        reverse_proxy http://vaultwarden:8080 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
+
+    # /admin from anywhere else → 404 (hide route existence).
+    @admin_elsewhere path /admin*
+    handle @admin_elsewhere {
+        respond 404
+    }
+
+    # Everything else (sync API, web vault, /notifications/hub websocket).
+    handle {
+        reverse_proxy http://vaultwarden:8080 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
+
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50MiB
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
+}

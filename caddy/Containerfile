@@ -1,0 +1,46 @@
+# Custom Caddy build:
+#   * Caddy core pinned to what coraza-caddy/v2 targets in its go.mod
+#   * coraza-caddy/v2 — WAF middleware (runs DetectionOnly in this stack)
+#   * caddy-dns/googleclouddns — DNS-01 challenge provider for Cloud DNS
+#
+# All --build-arg values come from caddy/versions.env. Cloud Build sources
+# that file and passes the args through; for local builds the same file is
+# `set -a; . versions.env; set +a` before `podman build`.
+#
+# This file replaces the Dagger pipeline that previously owned the build.
+# Trivy still runs, just as a Cloud Build step rather than a Dagger step.
+
+ARG GO_BUILDER_IMAGE
+ARG RUNTIME_IMAGE
+
+FROM ${GO_BUILDER_IMAGE} AS builder
+
+ARG XCADDY_VERSION
+ARG CADDY_VERSION
+ARG CORAZA_CADDY_MODULE
+ARG CORAZA_CADDY_VERSION
+ARG GCD_MODULE
+ARG GCD_VERSION
+
+ENV CGO_ENABLED=0
+ENV GOFLAGS=-trimpath
+ENV GOTOOLCHAIN=local
+ENV PATH=/root/go/bin:/usr/local/go/bin:/usr/bin:/bin
+
+RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}
+
+RUN mkdir -p /out && xcaddy build ${CADDY_VERSION} \
+        --with ${CORAZA_CADDY_MODULE}@${CORAZA_CADDY_VERSION} \
+        --with ${GCD_MODULE}@${GCD_VERSION} \
+        --output /out/caddy
+
+FROM ${RUNTIME_IMAGE}
+
+COPY --from=builder /out/caddy /usr/local/bin/caddy
+
+LABEL org.opencontainers.image.source="https://github.com/jasonross/vaultwarden_deployment"
+LABEL org.opencontainers.image.description="Custom Caddy with googleclouddns DNS-01 + Coraza WAF (DetectionOnly)."
+
+EXPOSE 443
+ENTRYPOINT ["/usr/local/bin/caddy"]
+CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

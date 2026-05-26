@@ -1,0 +1,7 @@
+[Unit]
+Description=Quarterly reminder to run the restic restore drill
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/bin/sh -c 'printf "Subject: [%%H] quarterly restore drill due\n\nRun the restic restore drill against a throwaway instance.\nSee runbook/restore-drill.md.\n" | /usr/sbin/sendmail -t root'

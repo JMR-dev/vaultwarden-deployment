@@ -1,0 +1,12 @@
+# Managed by Ansible. Private key from SOPS; do not edit by hand.
+[Interface]
+Address = {{ wg_server_address }}
+ListenPort = {{ wg_port }}
+PrivateKey = {{ wireguard_secrets.wg_server_privkey }}
+{% for peer in wg_peers %}
+
+[Peer]
+# {{ peer.name }}
+PublicKey = {{ peer.pubkey }}
+AllowedIPs = {{ peer.address }}/32
+{% endfor %}

@@ -1,0 +1,10 @@
+---
+- name: restart wg-quick
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ wg_interface }}.service"
+    state: restarted
+    daemon_reload: true
+
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

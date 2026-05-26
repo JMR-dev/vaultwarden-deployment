@@ -1,0 +1,54 @@
+---
+# Restic + msmtp are installed via the `base` role (EPEL).
+
+- name: Install backup driver script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../backup/vaultwarden-backup.sh"
+    dest: /usr/local/sbin/vaultwarden-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install backup systemd units
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../backup/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - vaultwarden-backup.service
+    - vaultwarden-backup.timer
+    - restic-check.service
+    - restic-check.timer
+    - restore-drill-reminder.service
+    - restore-drill-reminder.timer
+  notify: reload systemd
+
+- name: Initialize restic repository
+  ansible.builtin.shell:
+    cmd: |
+      set -a; . /etc/vaultwarden/restic.env; set +a
+      /usr/bin/restic init
+    chdir: /data
+  become: true
+  become_user: "{{ vault_user }}"
+  # restic init returns rc=1 if the repo already exists; that's the normal
+  # idempotent case on re-runs.
+  register: restic_init
+  changed_when: restic_init.rc == 0
+  failed_when:
+    - restic_init.rc != 0
+    - "'already initialized' not in (restic_init.stderr | default(''))"
+  no_log: true
+
+- name: Enable backup timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - vaultwarden-backup.timer
+    - restic-check.timer
+    - restore-drill-reminder.timer

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Mail the journal of a failed systemd unit to root (msmtp will deliver via
+# /etc/aliases). Called by status-email-root@<unit>.service.
+set -euo pipefail
+
+UNIT="${1:?usage: systemd-email <unit>}"
+HOST="$(hostname)"
+
+{
+  printf 'To: root\n'
+  printf 'From: systemd@%s\n' "$HOST"
+  printf 'Subject: [%s] unit failed: %s\n' "$HOST" "$UNIT"
+  printf '\n'
+  systemctl status --no-pager --full --lines=50 "$UNIT" || true
+  printf '\n--- recent journal ---\n'
+  journalctl --no-pager --lines=200 -u "$UNIT" || true
+} | /usr/sbin/sendmail -t

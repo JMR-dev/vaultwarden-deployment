@@ -1,0 +1,32 @@
+---
+# Defaults shared across all hosts. Override per-stack in inventory vars.
+
+timezone: UTC
+
+# Packages installed by the `base` role. EPEL provides msmtp/restic/wireguard-tools.
+base_packages:
+  - vim-enhanced
+  - jq
+  - sqlite
+  - tar
+  - rsync
+  - bind-utils
+  - tcpdump
+  - lsof
+  - policycoreutils-python-utils  # audit2allow, audit2why, sealert
+  - setools-console
+
+epel_packages:
+  - restic
+  - msmtp
+  - msmtp-sendmail
+  - wireguard-tools
+  - fail2ban
+  - fail2ban-firewalld   # for the nftables backend bits
+
+# Google Cloud Secret Manager — where Ansible pulls secrets from. The
+# controller (operator laptop or Cloud Build runner) must be authed to GCP
+# via ADC. Override gcp_project in inventory if the disposable + production
+# stacks live in different projects.
+gcp_project: REPLACE-with-gcp-project-id
+secret_prefix: vaultwarden-

@@ -1,0 +1,26 @@
+# Example stack config for the disposable shakeout instance.
+#
+# Copy this to your own non-tracked stack file or run `pulumi stack init disposable`
+# and `pulumi config set` for each value below.
+#
+# Do not commit real values for fields that point at production DNS or your
+# personal bootstrap IP — those are environment-specific.
+
+config:
+  vaultwarden:location: nbg1
+  vaultwarden:serverType: cx22
+  vaultwarden:image: alma-10
+  vaultwarden:hostname: vault-disposable
+  vaultwarden:volumeSize: "20"
+  vaultwarden:sshPubkey: ssh-ed25519 AAAA...REPLACE...
+  vaultwarden:wgPort: "51820"
+  # On first `pulumi up`, set this to your current public IP /32 so Ansible can
+  # SSH in. After WG is verified working from the host, set this to "" and
+  # re-run `pulumi up` to close public 22.
+  vaultwarden:bootstrapSshCidr: 203.0.113.1/32
+  vaultwarden:gcpProject: REPLACE-with-gcp-project-id
+  vaultwarden:dnsManagedZone: REPLACE-with-zone-resource-name
+  vaultwarden:dnsRecordName: vault-disposable.example.com.
+  vaultwarden:dnsTtl: "300"
+  vaultwarden:gcpArRegion: us-central1
+  vaultwarden:arImageName: vaultwarden-caddy

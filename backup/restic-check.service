@@ -1,0 +1,22 @@
+[Unit]
+Description=restic repository integrity check
+Wants=network-online.target
+After=network-online.target
+OnFailure=status-email-root@%n.service
+
+[Service]
+Type=oneshot
+User=vaultwarden
+Group=vaultwarden
+EnvironmentFile=/etc/vaultwarden/restic.env
+EnvironmentFile=/etc/vaultwarden/healthchecks.env
+# --read-data-subset=10% reads roughly one tenth of the data blobs on each
+# run; over 10 weeks the whole repo is verified. Index-only `restic check`
+# without --read-data catches corruption only when restic looks at metadata,
+# which can miss silent bitrot in actual blobs.
+ExecStart=/usr/bin/restic check --read-data-subset=10%
+ExecStartPost=/usr/bin/curl -fsS -m 10 --retry 3 ${HC_RESTIC_CHECK_URL}
+TimeoutStartSec=4h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

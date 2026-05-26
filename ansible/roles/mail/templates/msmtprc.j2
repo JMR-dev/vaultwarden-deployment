@@ -1,0 +1,16 @@
+# Managed by Ansible.
+defaults
+auth           on
+tls            on
+tls_starttls   on
+tls_trust_file /etc/pki/tls/certs/ca-bundle.crt
+logfile        /var/log/msmtp.log
+
+account default
+host           {{ msmtp_secrets.msmtp_smtp_host }}
+port           {{ msmtp_secrets.msmtp_smtp_port }}
+from           {{ msmtp_secrets.msmtp_from }}
+user           {{ msmtp_secrets.msmtp_smtp_user }}
+password       {{ msmtp_secrets.msmtp_smtp_password }}
+
+aliases        /etc/aliases

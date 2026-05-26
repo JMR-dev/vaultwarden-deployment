@@ -1,0 +1,10 @@
+[Unit]
+Description=Vaultwarden internal bridge
+
+[Network]
+NetworkName=vaultwarden
+Driver=bridge
+DisableDNS=false
+
+[Install]
+WantedBy=default.target

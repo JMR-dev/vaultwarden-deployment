@@ -1,0 +1,9 @@
+---
+- name: reload user systemd
+  ansible.builtin.command:
+    cmd: "systemctl --user daemon-reload"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ vault_uid }}"
+  become: true
+  become_user: "{{ vault_user }}"
+  changed_when: true

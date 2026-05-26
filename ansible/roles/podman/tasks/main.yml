@@ -1,0 +1,86 @@
+---
+- name: Install podman
+  ansible.builtin.package:
+    name:
+      - podman
+      - slirp4netns
+      - fuse-overlayfs
+    state: present
+
+- name: Create rootless vaultwarden user
+  ansible.builtin.user:
+    name: "{{ vault_user }}"
+    uid: "{{ vault_uid }}"
+    home: "/var/lib/{{ vault_user }}"
+    shell: /bin/bash
+    state: present
+    system: false   # needs login session for systemd --user
+
+- name: Own /data with rootless user
+  ansible.builtin.file:
+    path: "{{ vault_data_dir }}"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    state: directory
+    mode: "0750"
+
+# Required so `systemd --user` for the rootless user survives logout (and
+# starts at boot). Without linger, quadlets won't auto-start on reboot.
+- name: Enable lingering for rootless user
+  ansible.builtin.command: "loginctl enable-linger {{ vault_user }}"
+  args:
+    creates: "/var/lib/systemd/linger/{{ vault_user }}"
+
+# Drop the unprivileged-port floor to 443 so the rootless caddy quadlet can
+# publish 443 directly without CAP_NET_BIND_SERVICE.
+- name: Allow rootless bind to port 443+
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_unprivileged_port_start
+    value: "443"
+    sysctl_file: /etc/sysctl.d/10-vaultwarden-rootless-ports.conf
+    state: present
+    reload: true
+
+- name: Quadlet directory for rootless user
+  ansible.builtin.file:
+    path: "/var/lib/{{ vault_user }}/.config/containers/systemd"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0750"
+
+- name: Enable podman auto-update timer (rootless)
+  ansible.builtin.command:
+    cmd: "systemctl --user enable --now podman-auto-update.timer"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ vault_uid }}"
+  become: true
+  become_user: "{{ vault_user }}"
+  changed_when: false   # idempotent at the systemctl level
+
+- name: Load Healthchecks URLs from Secret Manager
+  ansible.builtin.set_fact:
+    hc_secrets: >-
+      {{ lookup('community.general.pipe',
+                'gcloud secrets versions access latest --secret=' + secret_prefix + 'healthchecks --project=' + gcp_project)
+         | from_yaml }}
+  no_log: true
+
+- name: User systemd drop-in dir for podman-auto-update
+  ansible.builtin.file:
+    path: "/var/lib/{{ vault_user }}/.config/systemd/user/podman-auto-update.service.d"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0750"
+
+- name: Healthchecks ping for podman-auto-update
+  ansible.builtin.copy:
+    dest: "/var/lib/{{ vault_user }}/.config/systemd/user/podman-auto-update.service.d/healthchecks.conf"
+    content: |
+      [Service]
+      ExecStartPost=/usr/bin/curl -fsS -m 10 --retry 3 {{ hc_secrets.hc_podman_update_url }}
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0640"
+  no_log: true

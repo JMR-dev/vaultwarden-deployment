@@ -1,0 +1,48 @@
+# Managed by Ansible.
+#
+# Real-IP forwarding is MANDATORY for the vaultwarden jail. Caddy is the only
+# thing publishing 443, so without `IP_HEADER=X-Forwarded-For` in Vaultwarden's
+# env (Phase 4) the log lines carry the Caddy container IP and the jail bans
+# its own reverse proxy. See Phase-4 quadlet env for the matching IP_HEADER.
+
+[DEFAULT]
+banaction       = nftables-multiport
+banaction_allports = nftables-allports
+destemail       = root@localhost
+sender          = fail2ban@{{ inventory_hostname }}
+mta             = sendmail
+action          = %(action_mwl)s
+bantime         = 1h
+findtime        = 10m
+maxretry        = 5
+backend         = systemd
+# WG subnet always trusted.
+ignoreip        = 127.0.0.1/8 ::1 {{ wg_subnet }}
+
+[sshd]
+enabled  = true
+port     = ssh
+logpath  = %(sshd_log)s
+
+[vaultwarden]
+enabled  = true
+filter   = vaultwarden
+port     = http,https
+backend  = polling
+logpath  = {{ vault_data_dir }}/vaultwarden.log
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+
+[vaultwarden-admin]
+# Stricter jail for /admin route — exposed only inside WG anyway, but if
+# Caddy's WG match is misconfigured we want loud, fast bans before anyone
+# notices the leak.
+enabled  = true
+filter   = vaultwarden-admin
+port     = http,https
+backend  = polling
+logpath  = {{ vault_data_dir }}/vaultwarden.log
+maxretry = 3
+findtime = 10m
+bantime  = 24h

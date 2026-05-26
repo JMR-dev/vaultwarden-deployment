@@ -1,0 +1,30 @@
+# Pulumi
+pulumi/Pulumi.*.yaml.bak
+pulumi/.pulumi/
+pulumi/bin/
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# SOPS — never commit decrypted secrets
+secrets/*.dec
+secrets/*.dec.*
+*.decrypted
+
+# Ansible
+ansible/.vault_pass
+ansible/*.retry
+ansible/.facts_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

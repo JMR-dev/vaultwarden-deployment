@@ -1,0 +1,207 @@
+# Cloud Build pipeline: full deploy.
+#
+# Steps:
+#   1. pulumi up — provision/update Hetzner infra + GCP DNS.
+#   2. build + Trivy scan + push the custom Caddy image to Artifact Registry.
+#   3. open the Hetzner Cloud Firewall to this Cloud Build run's outbound IP
+#      (Pulumi-managed; declarative).
+#   4. ansible-playbook against the host.
+#   5. close the firewall hole — runs even if Ansible failed (always-do step).
+#
+# All secrets come from Secret Manager via `availableSecrets`. The Cloud Build
+# SA needs:
+#   - roles/secretmanager.secretAccessor on the secrets below
+#   - roles/dns.admin on the GCP DNS managed zone
+#   - roles/storage.objectAdmin on $_PULUMI_STATE_BUCKET
+#   - roles/artifactregistry.writer on the AR repo created by Pulumi
+#
+# Operator-side prereqs (one-time):
+#   - GCS bucket for Pulumi state, $_PULUMI_STATE_BUCKET
+#   - All `vaultwarden-*` secrets created (see secrets/README.md)
+#   - Cloud Build trigger pointed at this file with the substitutions filled
+#
+# The AR repo itself is owned by Pulumi (`gcp.artifactregistry.Repository`)
+# with `allUsers` granted `roles/artifactregistry.reader` so the rootless
+# Hetzner host pulls without auth. The full image path is exported by
+# Pulumi as `imageRepo`; pulumi-up writes it to /workspace/.image-repo and
+# every downstream step reads from there.
+#
+# First-time bootstrap is still done locally — Cloud Build can't take over
+# until WG exists on the host and the Pulumi stack exists. See
+# runbook/README.md §2.
+
+substitutions:
+  _PULUMI_STACK: production
+  _PULUMI_STATE_BUCKET: gs://REPLACE-with-pulumi-state-bucket
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/vaultwarden-hcloud-token/versions/latest
+      env: HCLOUD_TOKEN
+    - versionName: projects/$PROJECT_ID/secrets/vaultwarden-ssh-private-key/versions/latest
+      env: SSH_PRIVATE_KEY
+
+steps:
+  # 1. Pulumi up — converge infra against repo state. Writes the AR image
+  #    path to /workspace/.image-repo for downstream steps.
+  - id: pulumi-up
+    name: pulumi/pulumi-go:latest
+    dir: pulumi
+    entrypoint: bash
+    secretEnv: [HCLOUD_TOKEN]
+    args:
+      - -ceux
+      - |
+        pulumi login "${_PULUMI_STATE_BUCKET}"
+        pulumi stack select "${_PULUMI_STACK}"
+        pulumi up --yes --skip-preview
+        pulumi stack output imageRepo > /workspace/.image-repo
+
+  # 2. Build the custom Caddy image.
+  - id: build-caddy
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceux
+      - |
+        IMAGE_REPO="$(cat /workspace/.image-repo)"
+        set -a; . caddy/versions.env; set +a
+        docker build \
+          --build-arg GO_BUILDER_IMAGE="$$GO_BUILDER_IMAGE" \
+          --build-arg RUNTIME_IMAGE="$$RUNTIME_IMAGE" \
+          --build-arg XCADDY_VERSION="$$XCADDY_VERSION" \
+          --build-arg CADDY_VERSION="$$CADDY_VERSION" \
+          --build-arg CORAZA_CADDY_MODULE="$$CORAZA_CADDY_MODULE" \
+          --build-arg CORAZA_CADDY_VERSION="$$CORAZA_CADDY_VERSION" \
+          --build-arg GCD_MODULE="$$GCD_MODULE" \
+          --build-arg GCD_VERSION="$$GCD_VERSION" \
+          -t "$$IMAGE_REPO:${SHORT_SHA}" \
+          -t "$$IMAGE_REPO:latest" \
+          -f caddy/Containerfile \
+          caddy
+
+  # 3a. Resolve the Trivy version. versions.env pins a minor; the helper
+  #     queries Docker Hub for the highest published patch in that minor.
+  #     Falls back to TRIVY_FALLBACK on any network/parse failure so a
+  #     transient Docker Hub blip doesn't fail the build.
+  - id: resolve-trivy-version
+    name: docker.io/library/golang:1-trixie
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        set -a; . caddy/versions.env; set +a
+        cd caddy/cmd/trivy-version
+        go run . > /workspace/.trivy-version
+        echo "Resolved Trivy: $(cat /workspace/.trivy-version)"
+
+  # 3b. Trivy scan against the just-built image. Fails fast on HIGH/CRITICAL.
+  - id: trivy-scan
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-caddy, resolve-trivy-version]
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        IMAGE_REPO="$(cat /workspace/.image-repo)"
+        TAG="$(cat /workspace/.trivy-version)"
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy:$$TAG \
+          image \
+          --severity=HIGH,CRITICAL \
+          --exit-code=1 \
+          --ignore-unfixed \
+          --no-progress \
+          "$$IMAGE_REPO:${SHORT_SHA}"
+
+  # 4. Push to Artifact Registry. The Cloud Build SA's ADC handles auth —
+  #    `gcloud auth configure-docker` installs a credential helper that
+  #    pipes docker's auth challenges through gcloud, so no token secret is
+  #    needed.
+  - id: push-caddy
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceux
+      - |
+        IMAGE_REPO="$(cat /workspace/.image-repo)"
+        AR_HOST="$$(echo "$$IMAGE_REPO" | cut -d/ -f1)"
+        gcloud auth configure-docker "$$AR_HOST" --quiet
+        docker push "$$IMAGE_REPO:${SHORT_SHA}"
+        docker push "$$IMAGE_REPO:latest"
+
+  # 5. Ansible deploy. Opens the firewall to this run's outbound IP via
+  #    Pulumi config flip, runs the playbook, then re-runs pulumi to close.
+  #    Both flips are in one bash step with `trap` so the close always runs.
+  - id: ansible-deploy
+    name: docker.io/library/ubuntu:24.04
+    entrypoint: bash
+    secretEnv: [SSH_PRIVATE_KEY, HCLOUD_TOKEN]
+    args:
+      - -ceu
+      - |
+        set -x
+
+        # Cleanup trap: close the firewall hole no matter how this step exits.
+        close_hole() {
+          set +e
+          pushd /workspace/pulumi >/dev/null
+          pulumi login "${_PULUMI_STATE_BUCKET}"
+          pulumi stack select "${_PULUMI_STACK}"
+          pulumi config set vaultwarden:bootstrapSshCidr ""
+          pulumi up --yes --skip-preview
+          popd >/dev/null
+        }
+        trap close_hole EXIT
+
+        # Install ansible + pulumi (pulumi is needed inside this step too).
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq ansible-core curl openssh-client jq python3-pip
+        pip3 install --break-system-packages google-cloud-secret-manager
+        curl -fsSL https://get.pulumi.com | sh
+        export PATH="$$HOME/.pulumi/bin:$$PATH"
+
+        ansible-galaxy collection install -r /workspace/ansible/requirements.yml -p /workspace/ansible/.collections
+
+        # Open the firewall to this build's outbound IP.
+        MY_IP="$(curl -fsS https://ifconfig.me)/32"
+        pushd /workspace/pulumi >/dev/null
+        pulumi login "${_PULUMI_STATE_BUCKET}"
+        pulumi stack select "${_PULUMI_STACK}"
+        pulumi config set vaultwarden:bootstrapSshCidr "$$MY_IP"
+        pulumi up --yes --skip-preview
+
+        # Read pulumi outputs for the inventory.
+        HOST_IP="$$(pulumi stack output ipv4 --show-secrets)"
+        FQDN="$$(pulumi stack output fqdn --show-secrets)"
+        popd >/dev/null
+
+        # SSH key for Ansible.
+        mkdir -p /root/.ssh
+        echo "$$SSH_PRIVATE_KEY" > /root/.ssh/id_ed25519
+        chmod 600 /root/.ssh/id_ed25519
+        ssh-keyscan -H "$$HOST_IP" >> /root/.ssh/known_hosts
+
+        # The operator commits inventory/<stack>.yml (with real wg_peers
+        # pubkeys, which are not secret) leaving ansible_host as the
+        # REPLACE_WITH_IPV4_FROM_PULUMI placeholder. Cloud Build only
+        # substitutes the IP.
+        cd /workspace/ansible
+        test -f inventory/${_PULUMI_STACK}.yml || {
+          echo "inventory/${_PULUMI_STACK}.yml is missing; commit it from the example." >&2
+          exit 1
+        }
+        sed -i "s|REPLACE_WITH_IPV4_FROM_PULUMI|$$HOST_IP|" inventory/${_PULUMI_STACK}.yml
+
+        IMAGE_REPO="$$(cat /workspace/.image-repo)"
+        ANSIBLE_HOST_KEY_CHECKING=False \
+          ansible-playbook -i inventory/${_PULUMI_STACK}.yml playbook.yml \
+            --extra-vars "caddy_image=$$IMAGE_REPO:latest"
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s

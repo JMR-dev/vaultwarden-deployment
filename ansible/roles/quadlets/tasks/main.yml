@@ -1,0 +1,89 @@
+---
+# Deploys the quadlet files from ../quadlets/ and the Caddyfile from ../caddy/
+# to the rootless vaultwarden user. Quadlet content is Phase 4; this role
+# just owns the deployment + reload.
+
+- name: Ensure quadlet target directory exists
+  ansible.builtin.file:
+    path: "/var/lib/{{ vault_user }}/.config/containers/systemd"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0750"
+
+- name: Ensure Caddy config directory exists
+  ansible.builtin.file:
+    path: "/var/lib/{{ vault_user }}/caddy"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0750"
+
+- name: Require caddy_image extra-var
+  ansible.builtin.assert:
+    that:
+      - caddy_image is defined and caddy_image | length > 0
+    fail_msg: >-
+      caddy_image is required. Source it from the Pulumi output, e.g.:
+        --extra-vars "caddy_image=$(cd ../pulumi && pulumi stack output imageRepo):latest"
+
+- name: Sync static quadlet files
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../quadlets/"
+    dest: "/var/lib/{{ vault_user }}/.config/containers/systemd/"
+    delete: true
+    rsync_opts:
+      - "--chown={{ vault_user }}:{{ vault_user }}"
+      - "--chmod=F640,D750"
+      - "--exclude=*.j2"
+  notify: reload user systemd
+
+- name: Template caddy.container with image from Pulumi
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../quadlets/caddy.container.j2"
+    dest: "/var/lib/{{ vault_user }}/.config/containers/systemd/caddy.container"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0640"
+  notify: reload user systemd
+
+- name: Sync Caddyfile
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../caddy/Caddyfile"
+    dest: "/var/lib/{{ vault_user }}/caddy/Caddyfile"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0640"
+  notify: reload user systemd
+
+- name: Render Caddyfile env vars
+  ansible.builtin.copy:
+    dest: "/var/lib/{{ vault_user }}/caddy/caddy.env"
+    content: |
+      VAULT_FQDN={{ vault_fqdn }}
+      WG_SUBNET={{ wg_subnet }}
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0640"
+  notify: reload user systemd
+
+- name: Render Vaultwarden env vars
+  ansible.builtin.copy:
+    dest: "/var/lib/{{ vault_user }}/vaultwarden.env"
+    content: |
+      DOMAIN=https://{{ vault_fqdn }}
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0640"
+  notify: reload user systemd
+
+- name: Create caddy data + log directories
+  ansible.builtin.file:
+    path: "/var/lib/{{ vault_user }}/caddy/{{ item }}"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0750"
+  loop:
+    - data
+    - logs

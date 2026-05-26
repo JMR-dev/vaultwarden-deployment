@@ -1,0 +1,49 @@
+name: vaultwarden
+runtime:
+  name: go
+  options:
+    binary: ./bin/vaultwarden
+description: Vaultwarden self-host infrastructure (Hetzner Cloud + GCP Cloud DNS)
+
+config:
+  # Hetzner
+  vaultwarden:location:
+    description: Hetzner Cloud location (e.g. nbg1, fsn1, hel1, ash, hil)
+  vaultwarden:serverType:
+    description: Hetzner server type (CX22-class)
+    default: cx22
+  vaultwarden:image:
+    description: Hetzner Cloud Rapid Deploy image name
+    default: alma-10
+  vaultwarden:hostname:
+    description: Server hostname (also used as the hcloud resource label)
+  vaultwarden:volumeSize:
+    description: Data volume size in GB
+    default: 20
+  vaultwarden:sshPubkey:
+    description: SSH public key (full string) used for initial bootstrap before WG is up
+  # Networking
+  vaultwarden:wgPort:
+    description: WireGuard UDP port published on the public interface
+    default: 51820
+  vaultwarden:bootstrapSshCidr:
+    description: |
+      CIDR allowed to reach public SSH (22) during initial Ansible bootstrap.
+      Set to the operator's current public IP. Set to empty string after WG is
+      up and the next `pulumi up` will close the public 22 hole.
+    default: ""
+  # GCP DNS
+  vaultwarden:gcpProject:
+    description: GCP project ID owning the Cloud DNS zone
+  vaultwarden:dnsManagedZone:
+    description: GCP Cloud DNS managed zone resource name
+  vaultwarden:dnsRecordName:
+    description: FQDN for the vault (with trailing dot, e.g. vault.example.com.)
+  vaultwarden:dnsTtl:
+    description: DNS record TTL in seconds
+    default: 300
+  vaultwarden:gcpArRegion:
+    description: GCP region for the Artifact Registry repo (e.g. us-central1, europe-west3)
+  vaultwarden:arImageName:
+    description: Image name within the AR repo
+    default: vaultwarden-caddy

@@ -1,0 +1,43 @@
+# Example inventory for the disposable shakeout stack.
+#
+# Generate the real file by reading the Pulumi outputs:
+#
+#   cd ../pulumi
+#   pulumi -s disposable stack output --json
+#
+# Then fill ansible_host (ipv4) and any per-host values below.
+
+all:
+  hosts:
+    vault-disposable:
+      ansible_host: REPLACE_WITH_IPV4_FROM_PULUMI
+      ansible_user: ansible
+      ansible_python_interpreter: /usr/bin/python3
+  vars:
+    # Identity
+    vault_fqdn: vault-disposable.example.com
+    operator_email: jason.ross841@gmail.com
+
+    # Rootless container user
+    vault_user: vaultwarden
+    vault_uid: 1100
+    vault_data_dir: /data
+
+    # WireGuard
+    wg_interface: wg0
+    wg_port: 51820
+    wg_server_address: "10.42.0.1/24"
+    wg_subnet: "10.42.0.0/24"
+    wg_peers:
+      - name: laptop
+        pubkey: REPLACE_WITH_LAPTOP_PUBKEY
+        address: 10.42.0.10
+      - name: phone
+        pubkey: REPLACE_WITH_PHONE_PUBKEY
+        address: 10.42.0.11
+
+    # dnf-automatic
+    dnf_reboot_window: "04:00"
+    dnf_reboot_dow: "Tue"
+
+    # Healthchecks ping URLs come from SOPS secrets, not from here.

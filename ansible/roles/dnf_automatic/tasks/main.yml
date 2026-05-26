@@ -1,0 +1,64 @@
+---
+- name: Install dnf-automatic
+  ansible.builtin.package:
+    name: dnf-automatic
+    state: present
+
+- name: Configure dnf-automatic
+  ansible.builtin.template:
+    src: automatic.conf.j2
+    dest: /etc/dnf/automatic.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Pin dnf-automatic-install.timer to maintenance window
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/dnf-automatic-install.timer.d/schedule.conf
+    content: |
+      [Timer]
+      OnCalendar=
+      OnCalendar={{ dnf_reboot_dow }} *-*-* {{ dnf_reboot_window }}
+      Persistent=true
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: OnFailure email for dnf-automatic-install
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/dnf-automatic-install.service.d/onfailure.conf
+    content: |
+      [Unit]
+      OnFailure=status-email-root@%n.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Load Healthchecks URLs from Secret Manager
+  ansible.builtin.set_fact:
+    hc_secrets: >-
+      {{ lookup('community.general.pipe',
+                'gcloud secrets versions access latest --secret=' + secret_prefix + 'healthchecks --project=' + gcp_project)
+         | from_yaml }}
+  no_log: true
+
+- name: Healthchecks success ping for dnf-automatic-install
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/dnf-automatic-install.service.d/healthchecks.conf
+    content: |
+      [Service]
+      ExecStartPost=/usr/bin/curl -fsS -m 10 --retry 3 {{ hc_secrets.hc_dnf_automatic_url }}
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+  notify: reload systemd
+
+- name: Enable dnf-automatic-install.timer
+  ansible.builtin.systemd:
+    name: dnf-automatic-install.timer
+    enabled: true
+    state: started
+    daemon_reload: true

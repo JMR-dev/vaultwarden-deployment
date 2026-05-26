@@ -1,0 +1,52 @@
+[Unit]
+Description=Vaultwarden
+Wants=network-online.target
+After=network-online.target
+OnFailure=status-email-root@%n.service
+
+[Container]
+Image=docker.io/vaultwarden/server:latest
+ContainerName=vaultwarden
+AutoUpdate=registry
+Network=vaultwarden.network
+
+# /data is the host bind-mount from /mnt/HC_Volume_<id>. :Z relabels under
+# SELinux private context — required for rootless container_t to read/write.
+Volume=/data:/data:Z
+
+# Per-stack values (DOMAIN) come from the Ansible-rendered env file.
+EnvironmentFile=%h/vaultwarden.env
+
+# Static configuration. SIGNUPS_ALLOWED=false locks new account creation
+# after the operator's account exists. IP_HEADER=X-Forwarded-For makes the
+# fail2ban jail (which reads /data/vaultwarden.log) ban real clients rather
+# than Caddy. INVITATIONS_ALLOWED=false — single-user deploy.
+Environment=ROCKET_PORT=8080
+Environment=ROCKET_ADDRESS=0.0.0.0
+Environment=DATA_FOLDER=/data
+Environment=DATABASE_URL=data/db.sqlite3
+Environment=SIGNUPS_ALLOWED=false
+Environment=SIGNUPS_VERIFY=true
+Environment=INVITATIONS_ALLOWED=false
+Environment=WEB_VAULT_ENABLED=true
+Environment=IP_HEADER=X-Forwarded-For
+Environment=LOG_FILE=/data/vaultwarden.log
+Environment=LOG_LEVEL=warn
+Environment=EXTENDED_LOGGING=true
+Environment=USE_SYSLOG=false
+Environment=WEBSOCKET_ENABLED=true
+
+# ADMIN_TOKEN is sourced from a Podman secret. Empty value = admin disabled
+# (the plan's default). To enable /admin, populate admin_token_argon2 in
+# secrets/vaultwarden.sops.yml; the secret rotates on next Ansible run.
+Secret=vaultwarden-admin-token,type=env,target=ADMIN_TOKEN
+
+# Health: a fixed 8080 is reached from Caddy on the shared bridge network.
+
+[Service]
+Restart=always
+RestartSec=10s
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
