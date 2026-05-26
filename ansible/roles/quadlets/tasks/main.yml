@@ -34,26 +34,38 @@
     delete: true
     rsync_opts:
       - "--chown={{ vault_user }}:{{ vault_user }}"
-      - "--chmod=F640,D750"
+      - "--chmod=F644,D755"
       - "--exclude=*.j2"
   notify: reload user systemd
 
+# 0644 here too — quadlet files are read by Podman's quadlet generator
+# (running as the rootless user's systemd-user-generator), which crosses
+# the same namespace boundary as the container mounts above. 0640 risks
+# the generator not seeing the unit on first activation.
 - name: Template caddy.container with image from Pulumi
   ansible.builtin.template:
     src: "{{ playbook_dir }}/../quadlets/caddy.container.j2"
     dest: "/var/lib/{{ vault_user }}/.config/containers/systemd/caddy.container"
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
-    mode: "0640"
+    mode: "0644"
   notify: reload user systemd
 
+# Mode 0644 (not 0640) is deliberate. These files hold non-secret config
+# (VAULT_FQDN, WG_SUBNET, DOMAIN — all public). Caddy runs in a distroless
+# `:nonroot` container as uid 65532; with rootless Podman's default user
+# namespace mapping, the container's nonroot uid is *outside* the host
+# vault_user's subuid range, so a 0640 file owned by vault_user appears as
+# 0:0 inside the container and is unreadable to Caddy. 0644 makes it
+# readable as "other". On a single-purpose host, the wider mode has no
+# practical exposure — no other UIDs are running.
 - name: Sync Caddyfile
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../caddy/Caddyfile"
     dest: "/var/lib/{{ vault_user }}/caddy/Caddyfile"
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
-    mode: "0640"
+    mode: "0644"
   notify: reload user systemd
 
 - name: Render Caddyfile env vars
@@ -64,7 +76,7 @@
       WG_SUBNET={{ wg_subnet }}
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
-    mode: "0640"
+    mode: "0644"
   notify: reload user systemd
 
 - name: Render Vaultwarden env vars
@@ -74,7 +86,7 @@
       DOMAIN=https://{{ vault_fqdn }}
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
-    mode: "0640"
+    mode: "0644"
   notify: reload user systemd
 
 - name: Create caddy data + log directories
@@ -87,3 +99,30 @@
   loop:
     - data
     - logs
+
+# Coraza writes /var/log/caddy/coraza-audit.log inside the container, which
+# bind-mounts out to /var/lib/<user>/caddy/logs/. SecAuditLog doesn't rotate
+# itself; logrotate handles it on the host. copytruncate is required —
+# Coraza holds the file open and we can't SIGHUP its writer.
+- name: Install logrotate
+  ansible.builtin.package:
+    name: logrotate
+    state: present
+
+- name: Coraza audit logrotate config
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/coraza-audit
+    content: |
+      /var/lib/{{ vault_user }}/caddy/logs/coraza-audit.log {
+          daily
+          rotate 14
+          compress
+          delaycompress
+          missingok
+          notifempty
+          copytruncate
+          su {{ vault_user }} {{ vault_user }}
+      }
+    owner: root
+    group: root
+    mode: "0644"

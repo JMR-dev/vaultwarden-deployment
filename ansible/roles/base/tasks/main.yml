@@ -25,6 +25,10 @@
 # Hetzner cloud-init mounts the attached volume at /mnt/HC_Volume_<id>. We
 # don't care about the ugly path; we bind-mount it to /data so every other
 # role + every quadlet sees the same stable path.
+#
+# Retry: a Pulumi-fresh box may still be running cloud-init when the
+# playbook reaches this task. 12 × 10s = 2 min covers the typical mkfs +
+# mount window on a fresh ext4 volume.
 - name: Discover Hetzner volume mount
   ansible.builtin.shell:
     cmd: |
@@ -32,7 +36,9 @@
       findmnt -ln -o TARGET /mnt/HC_Volume_* | head -n1
   register: hc_volume_mount
   changed_when: false
-  failed_when: hc_volume_mount.stdout == ""
+  retries: 12
+  delay: 10
+  until: hc_volume_mount.stdout != ""
 
 - name: Ensure /data exists
   ansible.builtin.file:

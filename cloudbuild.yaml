@@ -135,13 +135,17 @@ steps:
   #    Pulumi config flip, runs the playbook, then re-runs pulumi to close.
   #    Both flips are in one bash step with `trap` so the close always runs.
   - id: ansible-deploy
-    name: docker.io/library/ubuntu:24.04
+    # cloud-sdk:slim ships gcloud + python, which Ansible's gcloud-pipe
+    # secret lookups need. Plain ubuntu:24.04 lacked gcloud entirely.
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: bash
     secretEnv: [SSH_PRIVATE_KEY, HCLOUD_TOKEN]
     args:
       - -ceu
       - |
-        set -x
+        # No `set -x` here — this step touches SSH_PRIVATE_KEY and
+        # HCLOUD_TOKEN. Trace would dump the expanded `echo "$SSH_PRIVATE_KEY"
+        # > /root/.ssh/id_ed25519` into Cloud Build's persistent log.
 
         # Cleanup trap: close the firewall hole no matter how this step exits.
         close_hole() {
@@ -155,32 +159,32 @@ steps:
         }
         trap close_hole EXIT
 
-        # Install ansible + pulumi (pulumi is needed inside this step too).
+        # Install ansible + pulumi on top of cloud-sdk:slim.
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
-        apt-get install -y -qq ansible-core curl openssh-client jq python3-pip
-        pip3 install --break-system-packages google-cloud-secret-manager
+        apt-get install -y -qq ansible-core openssh-client jq
         curl -fsSL https://get.pulumi.com | sh
         export PATH="$$HOME/.pulumi/bin:$$PATH"
 
         ansible-galaxy collection install -r /workspace/ansible/requirements.yml -p /workspace/ansible/.collections
 
-        # Open the firewall to this build's outbound IP.
+        # Discover this build's outbound IP. Used twice: the Pulumi-managed
+        # Cloud Firewall rule and the host nftables extra-ssh allow.
         MY_IP="$(curl -fsS https://ifconfig.me)/32"
+
+        # Open the Cloud Firewall to MY_IP.
         pushd /workspace/pulumi >/dev/null
         pulumi login "${_PULUMI_STATE_BUCKET}"
         pulumi stack select "${_PULUMI_STACK}"
         pulumi config set vaultwarden:bootstrapSshCidr "$$MY_IP"
         pulumi up --yes --skip-preview
 
-        # Read pulumi outputs for the inventory.
-        HOST_IP="$$(pulumi stack output ipv4 --show-secrets)"
-        FQDN="$$(pulumi stack output fqdn --show-secrets)"
+        HOST_IP="$$(pulumi stack output ipv4)"
         popd >/dev/null
 
         # SSH key for Ansible.
         mkdir -p /root/.ssh
-        echo "$$SSH_PRIVATE_KEY" > /root/.ssh/id_ed25519
+        printf '%s' "$$SSH_PRIVATE_KEY" > /root/.ssh/id_ed25519
         chmod 600 /root/.ssh/id_ed25519
         ssh-keyscan -H "$$HOST_IP" >> /root/.ssh/known_hosts
 
@@ -196,9 +200,14 @@ steps:
         sed -i "s|REPLACE_WITH_IPV4_FROM_PULUMI|$$HOST_IP|" inventory/${_PULUMI_STACK}.yml
 
         IMAGE_REPO="$$(cat /workspace/.image-repo)"
+        # MY_IP gets a matching host-nftables accept rule via extra_ssh_cidrs;
+        # close_hole() removes the Cloud Firewall side after Ansible exits but
+        # the nftables rule will be removed on the next deploy when the var
+        # is no longer set (i.e. operator-local deploys revert to WG-only).
         ANSIBLE_HOST_KEY_CHECKING=False \
           ansible-playbook -i inventory/${_PULUMI_STACK}.yml playbook.yml \
-            --extra-vars "caddy_image=$$IMAGE_REPO:latest"
+            --extra-vars "caddy_image=$$IMAGE_REPO:latest" \
+            --extra-vars "{\"nftables_extra_ssh_cidrs\":[\"$$MY_IP\"]}"
 
 options:
   machineType: E2_HIGHCPU_8

@@ -47,3 +47,9 @@ config:
   vaultwarden:arImageName:
     description: Image name within the AR repo
     default: vaultwarden-caddy
+  vaultwarden:deleteProtection:
+    description: |
+      Enable Hetzner DeleteProtection on the data volume + Pulumi
+      protect-on-destroy. Required for production; leave false on disposable
+      so destroy/up cycles work.
+    default: false

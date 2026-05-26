@@ -38,15 +38,24 @@ sqlite3 "$DB" -cmd ".timeout 30000" ".backup $DB_SNAPSHOT"
 # Quick integrity check on the snapshot itself before we ship it. A corrupt
 # snapshot uploaded to R2 is a successful backup of garbage, which is worse
 # than a failed backup.
-sqlite3 "$DB_SNAPSHOT" "PRAGMA integrity_check;" | grep -qx "ok"
+#
+# integrity_check prints exactly "ok" on a clean DB; on errors it prints one
+# row per problem. Full-string equality is the correct guard — `grep -qx ok`
+# would pass on a corrupt DB that happened to emit an "ok" line among
+# errors.
+integrity_result=$(sqlite3 "$DB_SNAPSHOT" "PRAGMA integrity_check;")
+if [ "$integrity_result" != "ok" ]; then
+    printf 'snapshot integrity_check failed:\n%s\n' "$integrity_result" >&2
+    exit 1
+fi
 
 restic backup \
     --tag vaultwarden \
     --tag daily \
     --host "$TAG_HOST" \
     --exclude "$DB" \
-    --exclude "$DB.wal" \
-    --exclude "$DB.shm" \
+    --exclude "${DB}-wal" \
+    --exclude "${DB}-shm" \
     --exclude "$DATA_DIR/vaultwarden.log" \
     --exclude "$DATA_DIR/vaultwarden.log.*" \
     "$DATA_DIR"

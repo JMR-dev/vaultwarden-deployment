@@ -1,8 +1,10 @@
 [Unit]
 Description=Caddy reverse proxy (custom build with googleclouddns + Coraza)
-Wants=network-online.target
+Wants=network-online.target vaultwarden.service
 After=network-online.target vaultwarden.service
-Requires=vaultwarden.service
+# Wants= (not Requires=) on vaultwarden.service: a Vaultwarden restart
+# returns a brief 502 from reverse_proxy rather than tearing down Caddy
+# (which would drop TLS termination at 443). Client cache covers the gap.
 OnFailure=status-email-root@%n.service
 
 [Container]

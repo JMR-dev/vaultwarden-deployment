@@ -54,6 +54,14 @@
     state: started
     daemon_reload: true
 
+- name: wg-quick systemd drop-in dir
+  ansible.builtin.file:
+    path: "/etc/systemd/system/wg-quick@{{ wg_interface }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: OnFailure email for wg-quick
   ansible.builtin.copy:
     dest: "/etc/systemd/system/wg-quick@{{ wg_interface }}.service.d/onfailure.conf"

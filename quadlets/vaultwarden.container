@@ -37,8 +37,9 @@ Environment=USE_SYSLOG=false
 Environment=WEBSOCKET_ENABLED=true
 
 # ADMIN_TOKEN is sourced from a Podman secret. Empty value = admin disabled
-# (the plan's default). To enable /admin, populate admin_token_argon2 in
-# secrets/vaultwarden.sops.yml; the secret rotates on next Ansible run.
+# (the plan's default). To enable /admin, add admin_token_argon2 to the
+# vaultwarden-vaultwarden secret in Secret Manager; the Podman secret
+# rotates on next Ansible run.
 Secret=vaultwarden-admin-token,type=env,target=ADMIN_TOKEN
 
 # Health: a fixed 8080 is reached from Caddy on the shared bridge network.

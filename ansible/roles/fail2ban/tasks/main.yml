@@ -36,6 +36,14 @@
     enabled: true
     state: started
 
+- name: fail2ban systemd drop-in dir
+  ansible.builtin.file:
+    path: /etc/systemd/system/fail2ban.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: OnFailure email for fail2ban
   ansible.builtin.copy:
     dest: /etc/systemd/system/fail2ban.service.d/onfailure.conf

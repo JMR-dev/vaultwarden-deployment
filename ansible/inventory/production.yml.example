@@ -31,3 +31,6 @@ all:
 
     dnf_reboot_window: "04:00"
     dnf_reboot_dow: "Tue"
+
+    # Healthchecks ping URLs come from the vaultwarden-healthchecks secret
+    # in Secret Manager, not from here.

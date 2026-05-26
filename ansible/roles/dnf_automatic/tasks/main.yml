@@ -12,6 +12,17 @@
     group: root
     mode: "0644"
 
+- name: dnf-automatic systemd drop-in dirs
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/systemd/system/dnf-automatic-install.timer.d
+    - /etc/systemd/system/dnf-automatic-install.service.d
+
 - name: Pin dnf-automatic-install.timer to maintenance window
   ansible.builtin.copy:
     dest: /etc/systemd/system/dnf-automatic-install.timer.d/schedule.conf

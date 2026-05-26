@@ -26,9 +26,12 @@ table inet filter {
         # WireGuard — public.
         udp dport {{ wg_port }} accept
 
-        # SSH — WG subnet only. Public SSH is closed at this layer regardless
-        # of what Cloud Firewall allows (defence-in-depth).
+        # SSH — WG subnet always allowed.
         ip saddr {{ wg_subnet }} tcp dport 22 accept
+{% for cidr in nftables_extra_ssh_cidrs | default([]) %}
+        # SSH from {{ cidr }} (extra, e.g. Cloud Build's outbound IP for the deploy).
+        ip saddr {{ cidr }} tcp dport 22 accept
+{% endfor %}
 
         # Fail2Ban inserts a jump to f2b-<jail> chains at runtime; nothing to
         # declare here.

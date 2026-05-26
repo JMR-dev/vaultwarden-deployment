@@ -1,10 +1,14 @@
 # Example stack config for the disposable shakeout instance.
 #
-# Copy this to your own non-tracked stack file or run `pulumi stack init disposable`
-# and `pulumi config set` for each value below.
+# This file is a TEMPLATE. Do not `pulumi up` against it as-is — every
+# value with angle brackets must be replaced first. The recommended flow
+# is `pulumi stack init disposable && pulumi config set …` for each line,
+# rather than editing this file directly (which would risk committing
+# secrets or environment-specific values).
 #
-# Do not commit real values for fields that point at production DNS or your
-# personal bootstrap IP — those are environment-specific.
+# `vaultwarden:gcpArRegion` defaults to europe-west3 to match a typical
+# Hetzner nbg1/fsn1 footprint — cross-region image pulls otherwise pay
+# Atlantic latency on every `podman auto-update` tick.
 
 config:
   vaultwarden:location: nbg1
@@ -12,15 +16,18 @@ config:
   vaultwarden:image: alma-10
   vaultwarden:hostname: vault-disposable
   vaultwarden:volumeSize: "20"
-  vaultwarden:sshPubkey: ssh-ed25519 AAAA...REPLACE...
+  vaultwarden:sshPubkey: "ssh-ed25519 <BASE64-PUBKEY-MATERIAL> <comment>"
   vaultwarden:wgPort: "51820"
-  # On first `pulumi up`, set this to your current public IP /32 so Ansible can
-  # SSH in. After WG is verified working from the host, set this to "" and
-  # re-run `pulumi up` to close public 22.
-  vaultwarden:bootstrapSshCidr: 203.0.113.1/32
-  vaultwarden:gcpProject: REPLACE-with-gcp-project-id
-  vaultwarden:dnsManagedZone: REPLACE-with-zone-resource-name
-  vaultwarden:dnsRecordName: vault-disposable.example.com.
+  # On first `pulumi up`, set this to your current public IP /32 so Ansible
+  # can SSH in. After WG is verified working from the host, set this to ""
+  # and re-run `pulumi up` to close public 22. /0..7 are rejected.
+  vaultwarden:bootstrapSshCidr: "<your-public-ipv4>/32"
+  vaultwarden:gcpProject: "<gcp-project-id>"
+  vaultwarden:dnsManagedZone: "<cloud-dns-zone-resource-name>"
+  vaultwarden:dnsRecordName: "<vault-disposable-fqdn-with-trailing-dot>"
   vaultwarden:dnsTtl: "300"
-  vaultwarden:gcpArRegion: us-central1
+  vaultwarden:gcpArRegion: europe-west3
   vaultwarden:arImageName: vaultwarden-caddy
+  # Leave false on disposable so destroy/up cycles work. Set true on
+  # production to refuse a stray `pulumi destroy` from wiping the volume.
+  vaultwarden:deleteProtection: "false"

@@ -17,12 +17,23 @@ package main
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/artifactregistry"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/dns"
 	"github.com/pulumi/pulumi-hcloud/sdk/go/hcloud"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
+)
+
+// sshPubkeyPattern accepts the standard OpenSSH single-line public-key
+// formats: ssh-ed25519 / ssh-rsa / ssh-dss / ecdsa-sha2-* / sk-* (FIDO),
+// followed by a base64 blob and an optional comment. Rejects multiline
+// input — a stray newline would break cloud-init YAML rendering.
+var sshPubkeyPattern = regexp.MustCompile(
+	`^(ssh-(?:ed25519|rsa|dss)|ecdsa-sha2-\S+|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$`,
 )
 
 func main() {
@@ -44,11 +55,17 @@ func main() {
 			volumeSize = 20
 		}
 		sshPubkey := cfg.Require("sshPubkey")
+		if !sshPubkeyPattern.MatchString(sshPubkey) {
+			return fmt.Errorf("sshPubkey doesn't look like a single-line OpenSSH public key (got %q)", sshPubkey)
+		}
 		wgPort := cfg.Get("wgPort")
 		if wgPort == "" {
 			wgPort = "51820"
 		}
 		bootstrapSshCidr := cfg.Get("bootstrapSshCidr")
+		if err := validateBootstrapSshCidr(bootstrapSshCidr); err != nil {
+			return err
+		}
 
 		gcpProject := cfg.Require("gcpProject")
 		dnsManagedZone := cfg.Require("dnsManagedZone")
@@ -62,6 +79,12 @@ func main() {
 		if arImageName == "" {
 			arImageName = "vaultwarden-caddy"
 		}
+		// DeleteProtection on the data volume defaults to off (so disposable
+		// stacks can `pulumi destroy` cleanly) but should be enabled in
+		// production via `pulumi config set vaultwarden:deleteProtection true`.
+		// With it on, `pulumi destroy` will fail at the volume rather than
+		// silently dropping the live vault DB.
+		deleteProtection := cfg.GetBool("deleteProtection")
 
 		// SSH key uploaded to Hetzner for first-boot user.
 		sshKey, err := hcloud.NewSshKey(ctx, hostname+"-bootstrap", &hcloud.SshKeyArgs{
@@ -167,16 +190,17 @@ disable_root: true
 		// Data volume — decoupled from instance lifecycle so the box can be
 		// rebuilt without losing /data.
 		_, err = hcloud.NewVolume(ctx, hostname+"-data", &hcloud.VolumeArgs{
-			Name:      pulumi.String(hostname + "-data"),
-			Size:      pulumi.Int(volumeSize),
-			ServerId:  server.ID().ApplyT(parsePulumiID).(pulumi.IntOutput),
-			Format:    pulumi.String("ext4"),
-			Automount: pulumi.Bool(true),
+			Name:             pulumi.String(hostname + "-data"),
+			Size:             pulumi.Int(volumeSize),
+			ServerId:         server.ID().ApplyT(parsePulumiID).(pulumi.IntOutput),
+			Format:           pulumi.String("ext4"),
+			Automount:        pulumi.Bool(true),
+			DeleteProtection: pulumi.Bool(deleteProtection),
 			Labels: pulumi.StringMap{
 				"managed-by": pulumi.String("pulumi"),
 				"stack":      pulumi.String(ctx.Stack()),
 			},
-		})
+		}, pulumi.Protect(deleteProtection))
 		if err != nil {
 			return fmt.Errorf("create volume: %w", err)
 		}
@@ -269,4 +293,33 @@ func parsePulumiID(id pulumi.ID) (int, error) {
 		return 0, fmt.Errorf("parse hcloud id %q: %w", string(id), err)
 	}
 	return n, nil
+}
+
+// validateBootstrapSshCidr rejects values that would obviously open public
+// SSH wider than intended. Empty is fine (rule is omitted). Otherwise must
+// be a single IPv4 /N where N >= 8 — a typo'd /0 or /4 isn't a real CIDR
+// for a single operator endpoint.
+func validateBootstrapSshCidr(v string) error {
+	if v == "" {
+		return nil
+	}
+	parts := strings.SplitN(v, "/", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("bootstrapSshCidr %q: must be IPv4/N", v)
+	}
+	octets := strings.Split(parts[0], ".")
+	if len(octets) != 4 {
+		return fmt.Errorf("bootstrapSshCidr %q: not IPv4", v)
+	}
+	for _, o := range octets {
+		n, err := strconv.Atoi(o)
+		if err != nil || n < 0 || n > 255 {
+			return fmt.Errorf("bootstrapSshCidr %q: bad octet %q", v, o)
+		}
+	}
+	mask, err := strconv.Atoi(parts[1])
+	if err != nil || mask < 8 || mask > 32 {
+		return fmt.Errorf("bootstrapSshCidr %q: mask /%s rejected (require /8..32)", v, parts[1])
+	}
+	return nil
 }

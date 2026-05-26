@@ -22,7 +22,9 @@ epel_packages:
   - msmtp-sendmail
   - wireguard-tools
   - fail2ban
-  - fail2ban-firewalld   # for the nftables backend bits
+  # Deliberately NOT fail2ban-firewalld: it ships /etc/fail2ban/jail.d/00-
+  # firewalld.conf which overrides banaction to firewallcmd-rich-rules.
+  # We use nftables-multiport directly (set in jail.local).
 
 # Google Cloud Secret Manager — where Ansible pulls secrets from. The
 # controller (operator laptop or Cloud Build runner) must be authed to GCP
@@ -30,3 +32,9 @@ epel_packages:
 # stacks live in different projects.
 gcp_project: REPLACE-with-gcp-project-id
 secret_prefix: vaultwarden-
+
+# Extra CIDRs allowed to reach SSH at the host nftables layer, on top of the
+# WG subnet. Pass via --extra-vars from the controller (e.g. Cloud Build sets
+# its outbound IP here for the duration of the deploy, matching the Pulumi-
+# managed Cloud Firewall hole). Empty list = WG-only.
+nftables_extra_ssh_cidrs: []

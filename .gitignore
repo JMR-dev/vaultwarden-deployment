@@ -25,6 +25,10 @@ ansible/.facts_cache/
 *.swp
 *~
 
+# Local notes — untracked scratch files (review punch lists, TODO scratchpads)
+*.local.md
+REVIEW_DEFERRED.md
+
 # OS
 .DS_Store
 Thumbs.db
