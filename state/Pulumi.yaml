@@ -1,0 +1,4 @@
+name: gh-repo-bootstrap
+runtime: go
+backend:
+  url: file:///home/jasonross/workspace/vaultwarden_deployment/state
