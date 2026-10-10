@@ -25,7 +25,8 @@ ARG GCD_VERSION
 ENV CGO_ENABLED=0
 ENV GOFLAGS=-trimpath
 ENV GOTOOLCHAIN=local
-ENV PATH=/root/go/bin:/usr/local/go/bin:/usr/bin:/bin
+# The golang image's GOPATH is /go, so `go install` lands in /go/bin.
+ENV PATH=/go/bin:/usr/local/go/bin:/usr/bin:/bin
 
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}
 
@@ -38,7 +39,7 @@ FROM ${RUNTIME_IMAGE}
 
 COPY --from=builder /out/caddy /usr/local/bin/caddy
 
-LABEL org.opencontainers.image.source="https://github.com/jasonross/vaultwarden_deployment"
+LABEL org.opencontainers.image.source="https://github.com/JMR-dev/vaultwarden-deployment"
 LABEL org.opencontainers.image.description="Custom Caddy with googleclouddns DNS-01 + Coraza WAF (DetectionOnly)."
 
 EXPOSE 443

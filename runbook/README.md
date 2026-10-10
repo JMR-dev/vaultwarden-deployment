@@ -168,8 +168,14 @@ cp inventory/disposable.yml.example inventory/disposable.yml
 
 # Update group_vars/all.yml gcp_project to the real value.
 ansible-playbook -i inventory/disposable.yml playbook.yml \
-  --extra-vars "caddy_image=$(cd ../pulumi && pulumi -s disposable stack output imageRepo):latest"
+  --extra-vars "caddy_image=$(cd ../pulumi && pulumi -s disposable stack output imageRepo):latest" \
+  --extra-vars "{\"nftables_extra_ssh_cidrs\":[\"$(curl -s ifconfig.me)/32\"]}"
 ```
+
+The `nftables_extra_ssh_cidrs` var matters on the first run: WG isn't up yet,
+so you're SSHing over the public IP, and the nftables ruleset otherwise only
+admits SSH from the WG subnet. Once §2.4 closes the Cloud Firewall hole,
+re-run without it to drop the host-side rule too.
 
 ADC handles GCP auth for the Secret Manager lookups during the run.
 Expect ~5 minutes for the first run (package downloads dominate).
@@ -221,7 +227,7 @@ gcloud builds triggers create manual \
   --name=vaultwarden-deploy \
   --build-config=cloudbuild.yaml \
   --repo-type=GITHUB \
-  --repo=jasonross/vaultwarden_deployment \
+  --repo=https://github.com/JMR-dev/vaultwarden-deployment \
   --branch=main \
   --service-account=projects/<PROJECT>/serviceAccounts/vaultwarden-cb@<PROJECT>.iam.gserviceaccount.com \
   --substitutions=_PULUMI_STACK=production,_PULUMI_STATE_BUCKET=gs://<bucket>
@@ -536,13 +542,11 @@ optional.
 ### Caddy image rolls back broken
 
 ```sh
-gh auth login        # if needed
+IMAGE=$(cd pulumi && pulumi -s <stack> stack output imageRepo)
 # Find the previous SHA:
-gh api /users/<owner>/packages/container/vaultwarden-caddy/versions
-# Re-tag a known-good <sha> as :latest in AR, e.g.:
-# gcloud artifacts docker tags add \
-#   <region>-docker.pkg.dev/<project>/<repo>/vaultwarden-caddy:<good-sha> \
-#   <region>-docker.pkg.dev/<project>/<repo>/vaultwarden-caddy:latest
+gcloud artifacts docker tags list "$IMAGE"
+# Re-tag a known-good <sha> as :latest:
+gcloud artifacts docker tags add "$IMAGE:<good-sha>" "$IMAGE:latest"
 ssh ansible@10.42.0.1
 sudo -u vaultwarden XDG_RUNTIME_DIR=/run/user/1100 podman auto-update --rollback
 ```

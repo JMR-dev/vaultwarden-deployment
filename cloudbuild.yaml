@@ -32,7 +32,7 @@
 
 substitutions:
   _PULUMI_STACK: production
-  _PULUMI_STATE_BUCKET: gs://REPLACE-with-pulumi-state-bucket
+  _PULUMI_STATE_BUCKET: gs://vaultwarden-497422-pulumi-state
 
 availableSecrets:
   secretManager:

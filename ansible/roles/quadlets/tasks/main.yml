@@ -74,6 +74,7 @@
     content: |
       VAULT_FQDN={{ vault_fqdn }}
       WG_SUBNET={{ wg_subnet }}
+      GCP_PROJECT={{ gcp_project }}
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
     mode: "0644"

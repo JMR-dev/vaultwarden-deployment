@@ -30,7 +30,7 @@ epel_packages:
 # controller (operator laptop or Cloud Build runner) must be authed to GCP
 # via ADC. Override gcp_project in inventory if the disposable + production
 # stacks live in different projects.
-gcp_project: REPLACE-with-gcp-project-id
+gcp_project: vaultwarden-497422
 secret_prefix: vaultwarden-
 
 # Extra CIDRs allowed to reach SSH at the host nftables layer, on top of the

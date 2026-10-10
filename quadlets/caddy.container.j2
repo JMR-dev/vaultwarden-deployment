@@ -25,13 +25,26 @@ Network=vaultwarden.network
 # podman role) lets rootless caddy bind without CAP_NET_BIND_SERVICE.
 PublishPort=443:443
 
+# The distroless image runs Caddy as nonroot (65532). keep-id maps the host
+# vault_user onto that uid, so the bind-mounted data/log dirs (owned by
+# vault_user) are writable inside; without it they appear as root:root 0750
+# and Caddy can't open its logs or store certs.
+UserNS=keep-id:uid=65532,gid=65532
+# The host sysctl above doesn't carry into the container's own netns, where
+# nonroot would otherwise be refused :443 (and :80, which Caddy binds for
+# redirects but isn't published). Same as Docker's per-container default.
+Sysctl=net.ipv4.ip_unprivileged_port_start=0
+# Caddy's default storage is $HOME/.local/share/caddy — the container layer,
+# wiped on every auto-update recreate. Keep certs on the /data mount instead.
+Environment=XDG_DATA_HOME=/data
+
 # Caddyfile bind-mount, plus Caddy's data dir (certs, OCSP staples) and
 # log dir (access log + Coraza audit). All :Z under SELinux.
 Volume=%h/caddy/Caddyfile:/etc/caddy/Caddyfile:Z,ro
 Volume=%h/caddy/data:/data:Z
 Volume=%h/caddy/logs:/var/log/caddy:Z
 
-# VAULT_FQDN + WG_SUBNET come from the Ansible-rendered env file.
+# VAULT_FQDN, WG_SUBNET + GCP_PROJECT come from the Ansible-rendered env file.
 EnvironmentFile=%h/caddy/caddy.env
 
 # GCP SA JSON for DNS-01. Podman mounts the secret at /run/secrets/gcp-sa-dns

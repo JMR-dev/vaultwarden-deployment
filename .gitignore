@@ -1,4 +1,8 @@
 # Pulumi
+# gh-repo-bootstrap state key. The encrypted state beside it is fine to commit;
+# the key that decrypts it is not.
+state/.passphrase
+state/.passphrase.*
 pulumi/Pulumi.*.yaml.bak
 pulumi/.pulumi/
 pulumi/bin/
@@ -18,6 +22,7 @@ secrets/*.dec.*
 ansible/.vault_pass
 ansible/*.retry
 ansible/.facts_cache/
+ansible/.collections/
 
 # Editor
 .vscode/

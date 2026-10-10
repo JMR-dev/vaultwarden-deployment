@@ -86,7 +86,7 @@ gcp_sa_dns_json: |
 ### `vaultwarden-restic` — backup destination
 
 ```yaml
-restic_repository: s3:s3.<region>.r2.cloudflarestorage.com/<bucket>
+restic_repository: s3:https://<cloudflare-account-id>.r2.cloudflarestorage.com/<bucket>
 restic_password: <strong, randomly-generated>
 r2_access_key_id: <R2 access key>
 r2_secret_access_key: <R2 secret key>
@@ -112,7 +112,7 @@ deploys through Cloud Build. Each holds a single raw value (not YAML).
 ### `vaultwarden-hcloud-token` — Hetzner Cloud API token
 
 ```sh
-read -s -p "hcloud token: " TOK; echo
+read -rs "TOK?hcloud token: "; echo   # zsh; in bash: read -rs -p "hcloud token: " TOK
 printf '%s' "$TOK" \
   | gcloud secrets create vaultwarden-hcloud-token --replication-policy=automatic --data-file=-
 unset TOK

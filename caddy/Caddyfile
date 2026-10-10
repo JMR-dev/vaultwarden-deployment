@@ -20,14 +20,22 @@
 
 {$VAULT_FQDN} {
     tls {
-        # googleclouddns reads the project_id from the SA JSON pointed at
-        # by GOOGLE_APPLICATION_CREDENTIALS — no explicit project flag needed.
-        dns googleclouddns
+        # Credentials come from the SA JSON at GOOGLE_APPLICATION_CREDENTIALS,
+        # but the project does not: the module refuses to load without
+        # gcp_project ("missing Google Cloud project ID"). The zone lookup
+        # lists the project's zones, so the SA needs project-level
+        # dns.managedZones.list on top of its zone-scoped dns.admin.
+        dns googleclouddns {
+            gcp_project {$GCP_PROJECT}
+        }
     }
 
     encode zstd gzip
 
     coraza_waf {
+        # Mounts the embedded CRS filesystem; without it the @-prefixed
+        # Includes below fail with "no such file or directory".
+        load_owasp_crs
         directives `
             Include @coraza.conf-recommended
             Include @crs-setup.conf.example
