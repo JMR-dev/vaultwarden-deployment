@@ -24,19 +24,26 @@
     that:
       - caddy_image is defined and caddy_image | length > 0
     fail_msg: >-
-      caddy_image is required. Source it from the Pulumi output, e.g.:
-        --extra-vars "caddy_image=$(cd ../pulumi && pulumi stack output imageRepo):latest"
+      caddy_image is required: the floating per-stack tag, e.g.
+        -e caddy_image=us-east1-docker.pkg.dev/vaultwarden-497422/vaultwarden/caddy:<stack>
+      (platform's `caddyImage` output plus ":<stack>"; deploy.yml passes it).
 
-- name: Sync static quadlet files
-  ansible.posix.synchronize:
-    src: "{{ playbook_dir }}/../quadlets/"
-    dest: "/var/lib/{{ vault_user }}/.config/containers/systemd/"
-    delete: true
-    rsync_opts:
-      - "--chown={{ vault_user }}:{{ vault_user }}"
-      - "--chmod=F644,D755"
-      - "--exclude=*.j2"
-  notify: reload user systemd
+# Plain copy, not ansible.posix.synchronize: synchronize opens its own
+# rsync-over-ssh connection, which doesn't reliably inherit the IAP
+# ProxyCommand and ephemeral OS Login key scripts/ansible-iap.sh sets up.
+# A quadlet removed from the repo must be deleted on the host by hand.
+- name: Install static quadlet files
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/var/lib/{{ vault_user }}/.config/containers/systemd/{{ item | basename }}"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0644"
+  loop: "{{ query('fileglob', playbook_dir ~ '/../quadlets/*') | reject('search', '\\.j2$') | list }}"
+  notify:
+    - reload user systemd
+    - restart vaultwarden
+    - restart caddy
 
 # 0644 here too — quadlet files are read by Podman's quadlet generator
 # (running as the rootless user's systemd-user-generator), which crosses
@@ -49,10 +56,12 @@
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
     mode: "0644"
-  notify: reload user systemd
+  notify:
+    - reload user systemd
+    - restart caddy
 
 # Mode 0644 (not 0640) is deliberate. These files hold non-secret config
-# (VAULT_FQDN, WG_SUBNET, DOMAIN — all public). Caddy runs in a distroless
+# (VAULT_FQDN, ADMIN_CIDRS, DOMAIN — all public). Caddy runs in a distroless
 # `:nonroot` container as uid 65532; with rootless Podman's default user
 # namespace mapping, the container's nonroot uid is *outside* the host
 # vault_user's subuid range, so a 0640 file owned by vault_user appears as
@@ -66,29 +75,33 @@
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
     mode: "0644"
-  notify: reload user systemd
+  notify: restart caddy
 
 - name: Render Caddyfile env vars
   ansible.builtin.copy:
     dest: "/var/lib/{{ vault_user }}/caddy/caddy.env"
     content: |
       VAULT_FQDN={{ vault_fqdn }}
-      WG_SUBNET={{ wg_subnet }}
+      ADMIN_CIDRS={{ iap_range }}
       GCP_PROJECT={{ gcp_project }}
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
     mode: "0644"
-  notify: reload user systemd
+  notify: restart caddy
 
+# SIGNUPS_ALLOWED is true only for the one deploy that creates the operator's
+# account on a fresh stack (group_vars/all.yml); the next deploy flips it back
+# and the restart below makes that take effect.
 - name: Render Vaultwarden env vars
   ansible.builtin.copy:
     dest: "/var/lib/{{ vault_user }}/vaultwarden.env"
     content: |
       DOMAIN=https://{{ vault_fqdn }}
+      SIGNUPS_ALLOWED={{ vaultwarden_signups_allowed | bool | lower }}
     owner: "{{ vault_user }}"
     group: "{{ vault_user }}"
     mode: "0644"
-  notify: reload user systemd
+  notify: restart vaultwarden
 
 - name: Create caddy data + log directories
   ansible.builtin.file:
@@ -127,3 +140,68 @@
     owner: root
     group: root
     mode: "0644"
+
+# Container-down alerting. A system timer, because the rootless units can't
+# use OnFailure= (see the script's header).
+- name: Install container watch script
+  ansible.builtin.copy:
+    src: vaultwarden-container-watch
+    dest: /usr/local/sbin/vaultwarden-container-watch
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install container watch service
+  ansible.builtin.template:
+    src: vaultwarden-container-watch.service.j2
+    dest: /etc/systemd/system/vaultwarden-container-watch.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install container watch timer
+  ansible.builtin.copy:
+    src: vaultwarden-container-watch.timer
+    dest: /etc/systemd/system/vaultwarden-container-watch.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable container watch timer
+  ansible.builtin.systemd:
+    name: vaultwarden-container-watch.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Apply unit/config changes now (daemon-reload, then targeted restarts),
+# rather than at the end of the play after the backup role has run.
+- name: Apply quadlet changes
+  ansible.builtin.meta: flush_handlers
+
+# Quadlet units are generated, not enabled: [Install] WantedBy only takes
+# effect at boot. On a fresh host nothing would start them until a reboot, so
+# start them explicitly (a no-op when already running).
+- name: Ensure containers are running
+  ansible.builtin.command:
+    cmd: systemctl --user start vaultwarden.service caddy.service
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ vault_uid }}"
+  become: true
+  become_user: "{{ vault_user }}"
+  changed_when: false
+
+# Roll the floating :<stack> tags now instead of waiting for the daily timer.
+# Vaultwarden is health-gated (Notify=healthy), so a broken image is rolled
+# back; Caddy (distroless, no shell for a HealthCmd) rolls back only if it
+# fails to start.
+- name: Pull and roll updated images
+  ansible.builtin.command:
+    cmd: podman auto-update
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ vault_uid }}"
+  become: true
+  become_user: "{{ vault_user }}"
+  register: auto_update
+  changed_when: "'true' in auto_update.stdout"
+  tags: [rollout]

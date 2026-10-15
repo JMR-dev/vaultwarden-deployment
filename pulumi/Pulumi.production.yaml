@@ -1,0 +1,12 @@
+# Production stack: vault.jasonmross.dev. Every value is public.
+# `pulumi stack init production --secrets-provider gcpkms://...` adds the
+# secretsprovider/encryptedkey lines; commit them.
+config:
+  gcp:project: vaultwarden-497422
+  gcp:region: us-east1
+  vaultwarden:zone: us-east1-b
+  vaultwarden:machineType: e2-small
+  # The data disk is Pulumi-protected and the instance refuses API deletion.
+  # Undoing either is a deliberate two-step act (pulumi state unprotect +
+  # config change), never a stray `pulumi destroy`.
+  vaultwarden:deleteProtection: "true"

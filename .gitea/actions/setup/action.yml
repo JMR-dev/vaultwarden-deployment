@@ -1,0 +1,115 @@
+name: Deploy toolchain + GCP auth
+description: |
+  Installs pinned, checksum-verified tools and (optionally) authenticates
+  gcloud + ADC with the deployer SA key.
+
+  Every download is pinned to a version at least two weeks old when chosen
+  and verified against a hard-coded SHA-256. Bumping a tool means changing
+  its version AND hash together. Sources of the hashes:
+    go      go.dev/dl/?mode=json&include=all
+    pulumi  pulumi-<v>-checksums.txt on the GitHub release
+    gcloud  computed from the official tarball on 2026-10-15 (Google publishes
+            no checksum file for it)
+
+  Composite actions have no post step, so a job that passes `credentials`
+  must end with the cleanup step shown in deploy.yml (`if: always()`).
+
+inputs:
+  tools:
+    description: Space-separated subset of "go pulumi gcloud ansible"
+    required: true
+  credentials:
+    description: Deployer SA JSON key (secrets.GCP_DEPLOYER_KEY). Omit for no GCP auth.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install tools
+      shell: bash
+      env:
+        TOOLS: ${{ inputs.tools }}
+        GO_VERSION: "1.26.6"
+        GO_SHA256: 708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
+        PULUMI_VERSION: "3.266.0"
+        PULUMI_SHA256: 05c42a7bf80b9aa0299773f4edd750eb8e1dcd8fbd52d99c3578f38a7de21262
+        GCLOUD_VERSION: "586.0.0"
+        GCLOUD_SHA256: 6c774c76793eedd501150b59da653610fbe3eaac169e822965b722de75a2f001
+        ANSIBLE_CORE_VERSION: "2.20.7"
+      run: |
+        set -euo pipefail
+        tools_dir="${RUNNER_TEMP}/tools"
+        mkdir -p "$tools_dir"
+
+        # fetch <url> <sha256> <dest>
+        fetch() {
+          curl -fsSL --retry 3 -o "$3" "$1"
+          echo "$2  $3" | sha256sum -c --quiet -
+        }
+
+        apt_deps="jq openssh-client"
+        [[ " $TOOLS " == *" ansible "* ]] && apt_deps+=" python3-venv"
+        if ! command -v jq >/dev/null || ! command -v ssh >/dev/null || [[ " $TOOLS " == *" ansible "* ]]; then
+          sudo=""
+          [[ "$(id -u)" == 0 ]] || sudo=sudo
+          export DEBIAN_FRONTEND=noninteractive
+          $sudo apt-get update -qq
+          # shellcheck disable=SC2086
+          $sudo apt-get install -y -qq --no-install-recommends $apt_deps >/dev/null
+        fi
+
+        for tool in $TOOLS; do
+          case "$tool" in
+            go)
+              fetch "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" "$GO_SHA256" "${tools_dir}/go.tgz"
+              tar -C "$tools_dir" -xzf "${tools_dir}/go.tgz"
+              echo "${tools_dir}/go/bin" >>"$GITHUB_PATH"
+              # Never let a go.mod `toolchain` line download an unverified Go.
+              echo "GOTOOLCHAIN=local" >>"$GITHUB_ENV"
+              ;;
+            pulumi)
+              fetch "https://github.com/pulumi/pulumi/releases/download/v${PULUMI_VERSION}/pulumi-v${PULUMI_VERSION}-linux-x64.tar.gz" \
+                "$PULUMI_SHA256" "${tools_dir}/pulumi.tgz"
+              tar -C "$tools_dir" -xzf "${tools_dir}/pulumi.tgz"
+              echo "${tools_dir}/pulumi" >>"$GITHUB_PATH"
+              echo "PULUMI_SKIP_UPDATE_CHECK=true" >>"$GITHUB_ENV"
+              ;;
+            gcloud)
+              fetch "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" \
+                "$GCLOUD_SHA256" "${tools_dir}/gcloud.tgz"
+              tar -C "$tools_dir" -xzf "${tools_dir}/gcloud.tgz"
+              echo "${tools_dir}/google-cloud-sdk/bin" >>"$GITHUB_PATH"
+              # Job-private gcloud config; nothing lands in a shared $HOME.
+              echo "CLOUDSDK_CONFIG=${RUNNER_TEMP}/gcloud-config" >>"$GITHUB_ENV"
+              echo "CLOUDSDK_CORE_DISABLE_PROMPTS=1" >>"$GITHUB_ENV"
+              ;;
+            ansible)
+              python3 -m venv "${tools_dir}/ansible"
+              "${tools_dir}/ansible/bin/pip" install -q "ansible-core==${ANSIBLE_CORE_VERSION}"
+              echo "${tools_dir}/ansible/bin" >>"$GITHUB_PATH"
+              ;;
+            *)
+              echo "unknown tool: $tool" >&2
+              exit 1
+              ;;
+          esac
+        done
+
+    - name: Authenticate to GCP with the deployer key
+      if: inputs.credentials != ''
+      shell: bash
+      env:
+        GCP_KEY: ${{ inputs.credentials }}
+      run: |
+        set -euo pipefail
+        umask 077
+        key="${RUNNER_TEMP}/gcp-deployer.json"
+        printf '%s' "$GCP_KEY" >"$key"
+        # gcloud for the CLI calls (Ansible's secret lookups, IAP, artifacts);
+        # GOOGLE_APPLICATION_CREDENTIALS for Pulumi's GCS backend, gcpkms
+        # secrets provider and GCP provider.
+        gcloud auth activate-service-account --key-file="$key" --quiet
+        gcloud config set project vaultwarden-497422 --quiet
+        echo "GOOGLE_APPLICATION_CREDENTIALS=${key}" >>"$GITHUB_ENV"
+        echo "CLOUDSDK_CORE_PROJECT=vaultwarden-497422" >>"$GITHUB_ENV"

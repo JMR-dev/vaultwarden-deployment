@@ -1,0 +1,19 @@
+---
+# ansible-lint config for CI (.gitea/workflows/ci.yml). Correctness rules stay
+# on; the skips below are style rules the existing roles predate, each with
+# the reason it doesn't apply here.
+offline: true
+exclude_paths:
+  - .collections/
+skip_list:
+  # Handler names are referenced verbatim by `notify:`; renaming is churn.
+  - name[casing]
+  # Roles share facts like hc_secrets/vw_secrets on purpose; prefixing them
+  # per role would break that sharing for no safety gain.
+  - var-naming[no-role-prefix]
+  # `systemctl --user` as the rootless user with an explicit XDG_RUNTIME_DIR
+  # is the pattern that works across become_user; the systemd module's user
+  # scope needs a session bus that `become` doesn't provide.
+  - command-instead-of-module
+  - yaml[line-length]
+  - yaml[commas]

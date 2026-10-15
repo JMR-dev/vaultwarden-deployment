@@ -1,6 +1,6 @@
 // trivy-version resolves the highest published patch of an aquasec/trivy
 // minor (e.g. 0.70 → 0.70.3) by querying Docker Hub's tags API. Used by
-// cloudbuild.yaml: the Trivy scan step pins to a deliberate minor but
+// scripts/build-caddy.sh: the Trivy scan pins to a deliberate minor but
 // floats on patch.
 //
 // Inputs (env):

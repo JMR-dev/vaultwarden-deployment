@@ -62,7 +62,7 @@
   ansible.builtin.set_fact:
     hc_secrets: >-
       {{ lookup('community.general.pipe',
-                'gcloud secrets versions access latest --secret=' + secret_prefix + 'healthchecks --project=' + gcp_project)
+                'gcloud secrets versions access latest --secret=' + stack_secret_prefix + 'healthchecks --project=' + gcp_project)
          | from_yaml }}
   no_log: true
 

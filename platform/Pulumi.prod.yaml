@@ -1,0 +1,23 @@
+# Platform stack config. Every value here is public except
+# cloudflareAccountId, which is set with
+#   pulumi config set --secret vaultwarden-platform:cloudflareAccountId <id>
+# and stored KMS-encrypted (the repo is mirrored publicly).
+#
+# `pulumi stack init prod --secrets-provider gcpkms://...` adds the
+# secretsprovider/encryptedkey lines; commit them.
+config:
+  gcp:project: vaultwarden-497422
+  gcp:region: us-east1
+  vaultwarden-platform:dnsZone: vault
+  vaultwarden-platform:appStateBucket: vaultwarden-497422-pulumi-state
+  vaultwarden-platform:kmsKey: projects/vaultwarden-497422/locations/global/keyRings/pulumi/cryptoKeys/stacks
+  vaultwarden-platform:r2Location: enam
+  vaultwarden-platform:caddyDnsServiceAccount: vaultwarden-caddy-dns@vaultwarden-497422.iam.gserviceaccount.com
+  vaultwarden-platform:zoneListerRole: projects/vaultwarden-497422/roles/dnsZoneLister
+  vaultwarden-platform:stacks:
+    - name: disposable
+      fqdn: disposable.vault.jasonmross.dev.
+      active: true
+    - name: production
+      fqdn: vault.jasonmross.dev.
+      active: true

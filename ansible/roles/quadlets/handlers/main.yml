@@ -1,7 +1,27 @@
 ---
+# Order matters: handlers run in the order defined here, so the daemon-reload
+# that regenerates quadlet units always precedes the restarts.
 - name: reload user systemd
   ansible.builtin.command:
     cmd: "systemctl --user daemon-reload"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ vault_uid }}"
+  become: true
+  become_user: "{{ vault_user }}"
+  changed_when: true
+
+- name: restart vaultwarden
+  ansible.builtin.command:
+    cmd: "systemctl --user restart vaultwarden.service"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ vault_uid }}"
+  become: true
+  become_user: "{{ vault_user }}"
+  changed_when: true
+
+- name: restart caddy
+  ansible.builtin.command:
+    cmd: "systemctl --user restart caddy.service"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ vault_uid }}"
   become: true

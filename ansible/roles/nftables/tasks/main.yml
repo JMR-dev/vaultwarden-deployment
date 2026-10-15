@@ -1,6 +1,6 @@
 ---
-# firewalld and a hand-written nftables.service ruleset can't coexist: our
-# `flush ruleset` wipes firewalld's tables, and a firewalld reload wipes ours.
+# firewalld and a hand-written nftables ruleset don't mix: a firewalld reload
+# rewrites the ruleset underneath us.
 - name: Gather service facts
   ansible.builtin.service_facts:
 
@@ -12,7 +12,7 @@
     masked: true
   when: "'firewalld.service' in ansible_facts.services"
 
-- name: Install nftables base ruleset
+- name: Install nftables ruleset
   ansible.builtin.template:
     src: main.nft.j2
     dest: /etc/nftables/main.nft
@@ -20,8 +20,11 @@
     group: root
     mode: "0600"
     validate: "nft -c -f %s"
-  notify: restart nftables
 
+# nftables.service is used at boot only (its ExecStart is a plain
+# `nft -f /etc/sysconfig/nftables.conf`, no flush). Never `systemctl
+# restart|reload nftables` at runtime: on EL both flush the whole ruleset,
+# taking fail2ban's ban tables with it.
 - name: Point nftables.service at our ruleset
   ansible.builtin.copy:
     dest: /etc/sysconfig/nftables.conf
@@ -29,10 +32,15 @@
     owner: root
     group: root
     mode: "0644"
-  notify: restart nftables
 
-- name: Enable nftables
+- name: Enable nftables at boot
   ansible.builtin.systemd:
     name: nftables.service
     enabled: true
-    state: started
+
+# Load on every run, not just on change: `nft -f` replaces only our table, so
+# this converges the live ruleset even if someone edited it by hand.
+# Established SSH sessions (this one) survive via the ct state rule.
+- name: Load ruleset
+  ansible.builtin.command: nft -f /etc/nftables/main.nft
+  changed_when: false

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Mail root when a rootless container unit is down, and again when it recovers.
+#
+#   vaultwarden-container-watch <rootless-user> <unit>...
+#
+# The quadlets can't alert through OnFailure=: they run under the rootless
+# user's systemd, which cannot start the system-level status-email-root@
+# template, and with Restart=always a crash-looping unit cycles through
+# auto-restart and rarely reaches "failed" at all. So a system timer polls.
+#
+# A unit counts as down after two consecutive non-active polls (the timer
+# fires every 2 minutes), so auto-update restarts and the health-gated start
+# don't page. One mail per outage, one on recovery. State lives in /run and
+# resets on reboot.
+
+set -euo pipefail
+
+user="${1:?usage: $0 <user> <unit>...}"
+shift
+[[ $# -ge 1 ]] || { echo "usage: $0 <user> <unit>..." >&2; exit 1; }
+
+# Overridable only so the strike logic can be tested off-host.
+state_dir="${WATCH_STATE_DIR:-/run/vaultwarden-container-watch}"
+sendmail="${WATCH_SENDMAIL:-/usr/sbin/sendmail}"
+mkdir -p "$state_dir"
+host="$(hostname)"
+
+notify() { # <subject> <unit>
+  {
+    printf 'To: root\nFrom: systemd@%s\nSubject: [%s] %s\n\n' "$host" "$host" "$1"
+    systemctl --user -M "${user}@" status --no-pager --full --lines=0 "$2" || true
+    printf '\n--- recent journal ---\n'
+    journalctl --no-pager --lines=100 "_SYSTEMD_USER_UNIT=$2" || true
+  } | "$sendmail" -t
+}
+
+for unit in "$@"; do
+  state="$(systemctl --user -M "${user}@" is-active "$unit" 2>/dev/null || true)"
+  strikes_file="${state_dir}/${unit}.strikes"
+  alerted_file="${state_dir}/${unit}.alerted"
+
+  if [[ "$state" == active ]]; then
+    if [[ -e "$alerted_file" ]]; then
+      notify "recovered: ${unit}" "$unit"
+      rm -f "$alerted_file"
+    fi
+    rm -f "$strikes_file"
+    continue
+  fi
+
+  strikes=$(( $(cat "$strikes_file" 2>/dev/null || echo 0) + 1 ))
+  echo "$strikes" >"$strikes_file"
+  if (( strikes >= 2 )) && [[ ! -e "$alerted_file" ]]; then
+    notify "container down: ${unit} (${state:-unknown})" "$unit"
+    touch "$alerted_file"
+  fi
+done

@@ -1,0 +1,29 @@
+name: vaultwarden-platform
+runtime: go
+description: |
+  Long-lived and privileged infrastructure for the vaultwarden deployment:
+  network, static addresses, DNS records, R2 backup buckets, the Artifact
+  Registry repo, and every IAM grant. Run by the owner, locally. The CI-run
+  app stack (../pulumi) consumes it but cannot change it.
+
+config:
+  vaultwarden-platform:dnsZone:
+    description: Name of the EXISTING Cloud DNS managed zone (looked up, never managed)
+  vaultwarden-platform:appStateBucket:
+    description: Bucket name (no gs://) holding the app stack's Pulumi state; the deployer gets objectAdmin on it
+  vaultwarden-platform:kmsKey:
+    description: Full resource id of the KMS key both stacks use as their Pulumi secrets provider
+  vaultwarden-platform:cloudflareAccountId:
+    description: Cloudflare account id owning the R2 buckets (set with --secret; the repo is public)
+  vaultwarden-platform:r2Location:
+    description: R2 location hint (enam, wnam, weur, eeur, apac, oc)
+    default: enam
+  vaultwarden-platform:caddyDnsServiceAccount:
+    description: Email of the gcloud-made SA whose JSON key Caddy uses for DNS-01
+  vaultwarden-platform:zoneListerRole:
+    description: Custom role granting dns.managedZones.list (googleclouddns lists zones to find its own)
+  vaultwarden-platform:stacks:
+    description: |
+      App stacks, as a list of {name, fqdn, active}. An inactive stack keeps its
+      R2 bucket (protected) but releases its static addresses, DNS records and
+      secret grants.

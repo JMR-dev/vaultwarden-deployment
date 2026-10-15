@@ -1,0 +1,154 @@
+# Deploy one stack: Caddy image -> Pulumi (VM + disk) -> Ansible over IAP.
+#
+#   push to main (deploy paths)  -> disposable
+#   workflow_dispatch            -> disposable or production (production only from main)
+#
+# Authenticates with the deployer SA key in the repo secret GCP_DEPLOYER_KEY
+# (Gitea 1.27 has no Actions OIDC). That SA can rebuild the VM and read the
+# secrets Ansible renders; it cannot grant IAM, touch DNS, or read platform
+# state -- see platform/main.go. Every job that authenticates ends with the
+# key-removal step, because composite actions have no post hook.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pulumi/**
+      - ansible/**
+      - caddy/**
+      - quadlets/**
+      - backup/**
+      - scripts/ansible-iap.sh
+      - scripts/build-caddy.sh
+      - .gitea/**
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: Stack to deploy
+        type: choice
+        options: [disposable, production]
+        default: disposable
+      allow_replace:
+        description: Allow replacing or deleting the VM or its data disk (downtime + Let's Encrypt re-issue)
+        type: boolean
+        default: false
+      signups:
+        description: Open account signups for this deploy only (first account on a fresh stack); the next deploy closes them
+        type: boolean
+        default: false
+
+# Pushes don't populate `inputs`, so every use falls back to the push defaults.
+env:
+  STACK: ${{ inputs.stack || 'disposable' }}
+  ALLOW_REPLACE: ${{ inputs.allow_replace || 'false' }}
+  SIGNUPS: ${{ inputs.signups || 'false' }}
+  IMAGE: us-east1-docker.pkg.dev/vaultwarden-497422/vaultwarden/caddy
+  PULUMI_BACKEND_URL: gs://vaultwarden-497422-pulumi-state
+
+# One deploy per stack at a time; never cancel one mid-`pulumi up`.
+concurrency:
+  group: deploy-${{ inputs.stack || 'disposable' }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate stack and ref
+        run: |
+          case "$STACK" in
+            disposable) ;;
+            production)
+              if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+                echo "production deploys only from main (got $GITHUB_REF)" >&2
+                exit 1
+              fi
+              ;;
+            *) echo "unknown stack: $STACK" >&2; exit 1 ;;
+          esac
+          echo "Deploying $STACK from $GITHUB_REF @ ${GITHUB_SHA:0:12} (allow_replace=$ALLOW_REPLACE, signups=$SIGNUPS)"
+
+  image:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.gitea/actions/setup
+        with:
+          tools: go gcloud
+          credentials: ${{ secrets.GCP_DEPLOYER_KEY }}
+      - name: Build, scan and push -- or promote the already-scanned build
+        run: |
+          set -euo pipefail
+          sha="${GITHUB_SHA:0:12}"
+          gcloud auth configure-docker us-east1-docker.pkg.dev --quiet
+          if gcloud artifacts docker images describe "${IMAGE}:${sha}" >/dev/null 2>&1; then
+            echo "${IMAGE}:${sha} already built and scanned; promoting it"
+          else
+            scripts/build-caddy.sh "${IMAGE}:${sha}"
+            docker push "${IMAGE}:${sha}"
+          fi
+          # The floating per-stack tag podman auto-update watches on the host.
+          gcloud artifacts docker tags add "${IMAGE}:${sha}" "${IMAGE}:${STACK}" --quiet
+      - name: Remove deployer key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/gcp-deployer.json"; rm -rf "${RUNNER_TEMP}/gcloud-config" "${HOME}/.docker/config.json"
+
+  infra:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.gitea/actions/setup
+        with:
+          tools: go pulumi gcloud
+          credentials: ${{ secrets.GCP_DEPLOYER_KEY }}
+      - name: Build the Pulumi program
+        working-directory: pulumi
+        run: go build -o bin/vaultwarden .
+      - name: Preview, with a guard on replacing the VM or its disk
+        working-directory: pulumi
+        run: |
+          set -euo pipefail
+          pulumi stack select "$STACK"
+          pulumi preview --diff
+          pulumi preview --json >"${RUNNER_TEMP}/preview.json"
+          destructive="$(jq -r '
+            .steps[]?
+            | select(.op == "replace" or .op == "create-replacement" or .op == "delete-replaced" or .op == "delete")
+            | select(.urn | test("::gcp:compute/(instance|disk):"))
+            | "\(.op)\t\(.urn)"' "${RUNNER_TEMP}/preview.json")"
+          if [[ -n "$destructive" ]]; then
+            echo "Destructive changes to the VM or its data disk:"
+            echo "$destructive"
+            if [[ "$ALLOW_REPLACE" != "true" ]]; then
+              echo "Refusing without allow_replace=true. A replacement is ~15 min of downtime and" >&2
+              echo "a new Let's Encrypt certificate (5 per week per name); snapshot the disk first." >&2
+              exit 1
+            fi
+          fi
+      - name: pulumi up
+        working-directory: pulumi
+        run: pulumi up --yes --skip-preview --stack "$STACK"
+      - name: Remove deployer key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/gcp-deployer.json"; rm -rf "${RUNNER_TEMP}/gcloud-config"
+
+  configure:
+    needs: infra
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.gitea/actions/setup
+        with:
+          tools: gcloud ansible
+          credentials: ${{ secrets.GCP_DEPLOYER_KEY }}
+      - name: Ansible over IAP
+        run: |
+          scripts/ansible-iap.sh "$STACK" \
+            -e "caddy_image=${IMAGE}:${STACK}" \
+            -e "vaultwarden_signups_allowed=${SIGNUPS}"
+      - name: Remove deployer key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/gcp-deployer.json"; rm -rf "${RUNNER_TEMP}/gcloud-config"

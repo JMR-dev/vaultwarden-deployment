@@ -1,0 +1,9 @@
+# Managed by Ansible. See /usr/local/sbin/vaultwarden-container-watch.
+[Unit]
+Description=Alert when a rootless Vaultwarden/Caddy container is down
+After=network-online.target
+OnFailure=status-email-root@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vaultwarden-container-watch {{ vault_user }} vaultwarden.service caddy.service

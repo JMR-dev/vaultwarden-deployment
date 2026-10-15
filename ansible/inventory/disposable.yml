@@ -1,0 +1,17 @@
+# Inventory for the disposable stack. Committed: nothing here is secret.
+#
+# ansible_host is the GCE instance NAME, not an address: scripts/ansible-iap.sh
+# reaches it through `gcloud compute start-iap-tunnel %h 22` and pins its host
+# keys under that name. ansible_user (the OS Login username of whoever runs
+# the deploy) is supplied by the same script.
+
+all:
+  hosts:
+    vault-disposable:
+      ansible_host: vault-disposable
+      ansible_python_interpreter: /usr/bin/python3
+  vars:
+    stack: disposable
+    gce_zone: us-east1-b
+    vault_fqdn: disposable.vault.jasonmross.dev
+    operator_email: jason.ross841@gmail.com

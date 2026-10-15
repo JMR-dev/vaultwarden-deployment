@@ -16,11 +16,16 @@ bantime         = 1h
 findtime        = 10m
 maxretry        = 5
 backend         = systemd
-# WG subnet always trusted.
-ignoreip        = 127.0.0.1/8 ::1 {{ wg_subnet }}
+# IAP is the only way back into the box (SSH, and the /admin tunnel), so it
+# must never be banned. Access through it is already gated by IAM.
+ignoreip        = 127.0.0.1/8 ::1 {{ iap_range }}
 
 [sshd]
-enabled  = true
+# Off on purpose. :22 admits only the IAP range (VPC firewall + nftables), and
+# that range is in ignoreip, so this jail could never ban anything. It is also
+# the only jail on backend=systemd, which silently matches nothing without
+# python3-systemd -- a jail that looks armed and isn't.
+enabled  = false
 port     = ssh
 logpath  = %(sshd_log)s
 
@@ -35,9 +40,9 @@ findtime = 10m
 bantime  = 1h
 
 [vaultwarden-admin]
-# Stricter jail for /admin route — exposed only inside WG anyway, but if
-# Caddy's WG match is misconfigured we want loud, fast bans before anyone
-# notices the leak.
+# Stricter jail for /admin route — reachable only through an IAP tunnel
+# anyway, but if Caddy's IAP-range match is misconfigured we want loud,
+# fast bans before anyone notices the leak.
 enabled  = true
 filter   = vaultwarden-admin
 port     = http,https

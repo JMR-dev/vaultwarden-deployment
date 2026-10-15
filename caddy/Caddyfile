@@ -7,8 +7,12 @@
 #      false-positive on attachment uploads and Sends — encrypted payloads
 #      look exactly like the things CRS is trained to flag.
 #
-#   2. /admin is matched into a 404 outside the WG subnet. Returning 404
-#      (not 401/403) hides the route's existence from public scanners.
+#   2. /admin is matched into a 404 unless the client is in ADMIN_CIDRS --
+#      the IAP TCP-forwarding range, so the only way to reach it is an
+#      IAM-gated `gcloud compute start-iap-tunnel <vm> 443` (runbook §6).
+#      Returning 404 (not 401/403) hides the route from public scanners.
+#      This fails closed: if client addresses ever stop being preserved
+#      (runbook §3.4), every request looks non-IAP and /admin is 404 for all.
 #      Vaultwarden's ADMIN_TOKEN is unset by default anyway, but this keeps
 #      the panel inaccessible even if a future change re-enables it.
 
@@ -48,12 +52,12 @@
         `
     }
 
-    # /admin from a WG-subnet client → reverse proxy normally.
-    @admin_from_wg {
+    # /admin through an IAP tunnel → reverse proxy normally.
+    @admin_from_iap {
         path /admin*
-        remote_ip {$WG_SUBNET}
+        remote_ip {$ADMIN_CIDRS}
     }
-    handle @admin_from_wg {
+    handle @admin_from_iap {
         reverse_proxy http://vaultwarden:8080 {
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}

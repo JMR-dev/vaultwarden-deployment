@@ -2,7 +2,10 @@
 Description=Vaultwarden
 Wants=network-online.target
 After=network-online.target
-OnFailure=status-email-root@%n.service
+# No OnFailure= here: this unit runs under the rootless user's systemd, which
+# can't start the system-level status-email-root@ template (and Restart=always
+# rarely lets it reach "failed"). vaultwarden-container-watch.timer, a system
+# unit installed by the quadlets role, mails root when a container is down.
 
 [Container]
 Image=docker.io/vaultwarden/server:latest
@@ -10,22 +13,25 @@ ContainerName=vaultwarden
 AutoUpdate=registry
 Network=vaultwarden.network
 
-# /data is the host bind-mount from /mnt/HC_Volume_<id>. :Z relabels under
-# SELinux private context — required for rootless container_t to read/write.
+# /data is the GCE data disk (mounted by the Ansible base role). :Z relabels
+# under SELinux private context — required for rootless container_t to
+# read/write.
 Volume=/data:/data:Z
 
-# Per-stack values (DOMAIN) come from the Ansible-rendered env file.
+# Per-stack values (DOMAIN, SIGNUPS_ALLOWED) come from the Ansible-rendered
+# env file. SIGNUPS_ALLOWED is true for exactly one deploy -- the one that
+# creates the operator's account on a fresh stack -- and false otherwise.
 EnvironmentFile=%h/vaultwarden.env
 
-# Static configuration. SIGNUPS_ALLOWED=false locks new account creation
-# after the operator's account exists. IP_HEADER=X-Forwarded-For makes the
-# fail2ban jail (which reads /data/vaultwarden.log) ban real clients rather
-# than Caddy. INVITATIONS_ALLOWED=false — single-user deploy.
+# Static configuration. IP_HEADER=X-Forwarded-For makes the fail2ban jail
+# (which reads /data/vaultwarden.log) ban real clients rather than Caddy.
+# INVITATIONS_ALLOWED=false — single-user deploy. SIGNUPS_VERIFY only takes
+# effect once Vaultwarden has SMTP configured (it has none here), so it is
+# inert today rather than a startup error.
 Environment=ROCKET_PORT=8080
 Environment=ROCKET_ADDRESS=0.0.0.0
 Environment=DATA_FOLDER=/data
 Environment=DATABASE_URL=data/db.sqlite3
-Environment=SIGNUPS_ALLOWED=false
 Environment=SIGNUPS_VERIFY=true
 Environment=INVITATIONS_ALLOWED=false
 Environment=WEB_VAULT_ENABLED=true
@@ -42,9 +48,21 @@ Environment=WEBSOCKET_ENABLED=true
 # rotates on next Ansible run.
 Secret=vaultwarden-admin-token,type=env,target=ADMIN_TOKEN
 
-# Health: a fixed 8080 is reached from Caddy on the shared bridge network.
+# Health gate for `podman auto-update`: with Notify=healthy the unit only
+# counts as started once the healthcheck passes, so an image that starts but
+# serves errors is rolled back instead of left running. /healthcheck.sh ships
+# in the upstream image. Caddy reaches 8080 over the shared bridge network.
+HealthCmd=/healthcheck.sh
+HealthInterval=60s
+HealthStartPeriod=30s
+HealthRetries=3
+Notify=healthy
 
 [Service]
+# Never start on an empty boot-disk /data: if the data disk didn't mount
+# (fstab uses nofail), Vaultwarden would happily initialise a fresh vault
+# there and look like total data loss.
+ExecStartPre=/usr/bin/mountpoint -q /data
 Restart=always
 RestartSec=10s
 TimeoutStartSec=300

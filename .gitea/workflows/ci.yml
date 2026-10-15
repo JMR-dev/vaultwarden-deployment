@@ -1,0 +1,67 @@
+# Checks for every pull request and every non-main push. No secrets, no GCP
+# access: nothing here can change infrastructure. Deploys are deploy.yml.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [pulumi, platform]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.gitea/actions/setup
+        with:
+          tools: go
+      - name: gofmt, vet, test, build
+        working-directory: ${{ matrix.module }}
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then echo "gofmt needed: $unformatted"; exit 1; fi
+          go vet ./...
+          go test ./...
+          go build -o /dev/null .
+
+  ansible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.gitea/actions/setup
+        with:
+          tools: ansible
+      - name: Syntax check (both stacks) and lint
+        working-directory: ansible
+        run: |
+          pip install -q ansible-lint==26.9.0
+          ansible-galaxy collection install -r requirements.yml -p .collections >/dev/null
+          for stack in disposable production; do
+            ansible-playbook -i "inventory/${stack}.yml" playbook.yml --syntax-check
+          done
+          ansible-lint
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: shellcheck
+        run: |
+          sudo=""
+          [[ "$(id -u)" == 0 ]] || sudo=sudo
+          $sudo apt-get update -qq && $sudo apt-get install -y -qq --no-install-recommends shellcheck >/dev/null
+          shellcheck -x scripts/*.sh backup/*.sh ansible/roles/mail/files/systemd-email \
+            ansible/roles/quadlets/files/vaultwarden-container-watch
+
+  caddy-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.gitea/actions/setup
+        with:
+          tools: go
+      - name: Build + Trivy scan (no push)
+        run: scripts/build-caddy.sh "vaultwarden-caddy:ci-${GITHUB_SHA:0:12}"

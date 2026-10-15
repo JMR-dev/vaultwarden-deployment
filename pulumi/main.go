@@ -1,325 +1,258 @@
-// Phase 1: Hetzner Cloud server + Cloud Firewall + attached volume + GCP Cloud DNS A/AAAA.
+// The vaultwarden app stack: one GCE VM plus its data disk, per Pulumi stack
+// (`disposable`, `production`). Run by Gitea Actions with the deployer SA key.
 //
-// Two-stage bootstrap is intentional:
+// Everything this stack consumes but must not own -- network, firewall, the
+// static addresses and their DNS records, the registry, IAM -- comes from the
+// owner-run platform stack (../platform). The deployer can't change those, so
+// a leaked CI key can rebuild the VM but can't widen anyone's access.
 //
-//   1. First `pulumi up` with `bootstrapSshCidr` set to the operator's public IP
-//      provisions the server with public SSH (22) open to that one IP so Ansible
-//      can reach it. WG is not yet up.
-//   2. After Ansible brings up wg-quick@wg0, set `bootstrapSshCidr` to "" and
-//      re-run `pulumi up`. The public 22 rule is removed; SSH is then reachable
-//      only through the WG subnet (which is host-internal, so effectively
-//      WG-only from the operator's laptop).
-//
-// Cloud Firewall + host nftables (configured by Ansible) are deliberately
-// redundant layers.
-
+// The instance has NO attached service account: nothing on the box can mint
+// a Google token. Secrets are pushed by Ansible from the controller; Caddy's
+// DNS-01 uses its own SA key (a Podman secret).
 package main
 
 import (
 	"fmt"
-	"regexp"
-	"strconv"
-	"strings"
 
-	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/artifactregistry"
-	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/dns"
-	"github.com/pulumi/pulumi-hcloud/sdk/go/hcloud"
+	gcpcompute "github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/compute"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
 )
 
-// sshPubkeyPattern accepts the standard OpenSSH single-line public-key
-// formats: ssh-ed25519 / ssh-rsa / ssh-dss / ecdsa-sha2-* / sk-* (FIDO),
-// followed by a base64 blob and an optional comment. Rejects multiline
-// input — a stray newline would break cloud-init YAML rendering.
-var sshPubkeyPattern = regexp.MustCompile(
-	`^(ssh-(?:ed25519|rsa|dss)|ecdsa-sha2-\S+|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$`,
+const (
+	// NetworkTag must match platform's NetworkTag: every firewall rule targets it.
+	NetworkTag = "vaultwarden"
+
+	// DataDiskDeviceName is how the guest sees the data disk:
+	// /dev/disk/by-id/google-vault-data. Ansible's base role mounts it at /data.
+	DataDiskDeviceName = "vault-data"
+
+	// BootImage is a family, not a pinned image: new VMs get the current build,
+	// and the family is never re-resolved for an existing VM, so it causes no
+	// diff. Changing this string DOES replace the VM.
+	BootImage = "almalinux-cloud/almalinux-10"
 )
 
-func main() {
-	pulumi.Run(func(ctx *pulumi.Context) error {
-		cfg := config.New(ctx, "vaultwarden")
-
-		location := cfg.Require("location")
-		serverType := cfg.Get("serverType")
-		if serverType == "" {
-			serverType = "cx22"
-		}
-		image := cfg.Get("image")
-		if image == "" {
-			image = "alma-10"
-		}
-		hostname := cfg.Require("hostname")
-		volumeSize := cfg.GetInt("volumeSize")
-		if volumeSize == 0 {
-			volumeSize = 20
-		}
-		sshPubkey := cfg.Require("sshPubkey")
-		if !sshPubkeyPattern.MatchString(sshPubkey) {
-			return fmt.Errorf("sshPubkey doesn't look like a single-line OpenSSH public key (got %q)", sshPubkey)
-		}
-		wgPort := cfg.Get("wgPort")
-		if wgPort == "" {
-			wgPort = "51820"
-		}
-		bootstrapSshCidr := cfg.Get("bootstrapSshCidr")
-		if err := validateBootstrapSshCidr(bootstrapSshCidr); err != nil {
-			return err
-		}
-
-		gcpProject := cfg.Require("gcpProject")
-		dnsManagedZone := cfg.Require("dnsManagedZone")
-		dnsRecordName := cfg.Require("dnsRecordName")
-		dnsTtl := cfg.GetInt("dnsTtl")
-		if dnsTtl == 0 {
-			dnsTtl = 300
-		}
-		arRegion := cfg.Require("gcpArRegion")
-		arImageName := cfg.Get("arImageName")
-		if arImageName == "" {
-			arImageName = "vaultwarden-caddy"
-		}
-		// DeleteProtection on the data volume defaults to off (so disposable
-		// stacks can `pulumi destroy` cleanly) but should be enabled in
-		// production via `pulumi config set vaultwarden:deleteProtection true`.
-		// With it on, `pulumi destroy` will fail at the volume rather than
-		// silently dropping the live vault DB.
-		deleteProtection := cfg.GetBool("deleteProtection")
-
-		// SSH key uploaded to Hetzner for first-boot user.
-		sshKey, err := hcloud.NewSshKey(ctx, hostname+"-bootstrap", &hcloud.SshKeyArgs{
-			Name:      pulumi.String(hostname + "-bootstrap"),
-			PublicKey: pulumi.String(sshPubkey),
-			Labels: pulumi.StringMap{
-				"managed-by": pulumi.String("pulumi"),
-				"stack":      pulumi.String(ctx.Stack()),
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("upload ssh key: %w", err)
-		}
-
-		// Firewall rules. Public 443 + WG always; ICMP for diagnostics; public 22
-		// only during bootstrap.
-		fwRules := hcloud.FirewallRuleArray{
-			&hcloud.FirewallRuleArgs{
-				Description: pulumi.String("HTTPS"),
-				Direction:   pulumi.String("in"),
-				Protocol:    pulumi.String("tcp"),
-				Port:        pulumi.String("443"),
-				SourceIps:   pulumi.StringArray{pulumi.String("0.0.0.0/0"), pulumi.String("::/0")},
-			},
-			&hcloud.FirewallRuleArgs{
-				Description: pulumi.String("WireGuard"),
-				Direction:   pulumi.String("in"),
-				Protocol:    pulumi.String("udp"),
-				Port:        pulumi.String(wgPort),
-				SourceIps:   pulumi.StringArray{pulumi.String("0.0.0.0/0"), pulumi.String("::/0")},
-			},
-			&hcloud.FirewallRuleArgs{
-				Description: pulumi.String("ICMP"),
-				Direction:   pulumi.String("in"),
-				Protocol:    pulumi.String("icmp"),
-				SourceIps:   pulumi.StringArray{pulumi.String("0.0.0.0/0"), pulumi.String("::/0")},
-			},
-		}
-		if bootstrapSshCidr != "" {
-			fwRules = append(fwRules, &hcloud.FirewallRuleArgs{
-				Description: pulumi.String("Bootstrap SSH (remove after WG is up)"),
-				Direction:   pulumi.String("in"),
-				Protocol:    pulumi.String("tcp"),
-				Port:        pulumi.String("22"),
-				SourceIps:   pulumi.StringArray{pulumi.String(bootstrapSshCidr)},
-			})
-		}
-
-		fw, err := hcloud.NewFirewall(ctx, hostname+"-fw", &hcloud.FirewallArgs{
-			Name:  pulumi.String(hostname + "-fw"),
-			Rules: fwRules,
-			Labels: pulumi.StringMap{
-				"managed-by": pulumi.String("pulumi"),
-				"stack":      pulumi.String(ctx.Stack()),
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("create firewall: %w", err)
-		}
-
-		// Server. Cloud-init handles the bare minimum needed for Ansible to take
-		// over: install python3, drop the SSH key in for the bootstrap user.
-		// Everything else (rootless podman user, WG, nftables, ...) is Ansible.
-		userData := pulumi.Sprintf(`#cloud-config
-package_update: true
-package_upgrade: false
-packages:
-  - python3
-  - python3-libdnf5
-users:
-  - name: ansible
-    groups: wheel
-    shell: /bin/bash
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    ssh_authorized_keys:
-      - %s
-ssh_pwauth: false
-disable_root: true
-`, sshPubkey)
-
-		server, err := hcloud.NewServer(ctx, hostname, &hcloud.ServerArgs{
-			Name:       pulumi.String(hostname),
-			ServerType: pulumi.String(serverType),
-			Image:      pulumi.String(image),
-			Location:   pulumi.String(location),
-			SshKeys:    pulumi.StringArray{sshKey.Name},
-			UserData:   userData,
-			FirewallIds: pulumi.IntArray{
-				fw.ID().ApplyT(func(id pulumi.ID) (int, error) {
-					return parsePulumiID(id)
-				}).(pulumi.IntOutput),
-			},
-			Labels: pulumi.StringMap{
-				"managed-by": pulumi.String("pulumi"),
-				"stack":      pulumi.String(ctx.Stack()),
-				"role":       pulumi.String("vaultwarden"),
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("create server: %w", err)
-		}
-
-		// Data volume — decoupled from instance lifecycle so the box can be
-		// rebuilt without losing /data.
-		_, err = hcloud.NewVolume(ctx, hostname+"-data", &hcloud.VolumeArgs{
-			Name:             pulumi.String(hostname + "-data"),
-			Size:             pulumi.Int(volumeSize),
-			ServerId:         server.ID().ApplyT(parsePulumiID).(pulumi.IntOutput),
-			Format:           pulumi.String("ext4"),
-			Automount:        pulumi.Bool(true),
-			DeleteProtection: pulumi.Bool(deleteProtection),
-			Labels: pulumi.StringMap{
-				"managed-by": pulumi.String("pulumi"),
-				"stack":      pulumi.String(ctx.Stack()),
-			},
-		}, pulumi.Protect(deleteProtection))
-		if err != nil {
-			return fmt.Errorf("create volume: %w", err)
-		}
-
-		// DNS records. AAAA pulls from the server's IPv6 (Hetzner gives a /64;
-		// Vaultwarden binds the first address).
-		_, err = dns.NewRecordSet(ctx, hostname+"-a", &dns.RecordSetArgs{
-			Project:     pulumi.String(gcpProject),
-			ManagedZone: pulumi.String(dnsManagedZone),
-			Name:        pulumi.String(dnsRecordName),
-			Type:        pulumi.String("A"),
-			Ttl:         pulumi.Int(dnsTtl),
-			Rrdatas: pulumi.StringArray{
-				server.Ipv4Address,
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("create A record: %w", err)
-		}
-
-		_, err = dns.NewRecordSet(ctx, hostname+"-aaaa", &dns.RecordSetArgs{
-			Project:     pulumi.String(gcpProject),
-			ManagedZone: pulumi.String(dnsManagedZone),
-			Name:        pulumi.String(dnsRecordName),
-			Type:        pulumi.String("AAAA"),
-			Ttl:         pulumi.Int(dnsTtl),
-			Rrdatas: pulumi.StringArray{
-				server.Ipv6Address,
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("create AAAA record: %w", err)
-		}
-
-		// Artifact Registry — per-stack Docker repo for the custom Caddy image.
-		// `allUsers` gets reader so the rootless Hetzner host pulls without
-		// auth; the Caddy image contains no secrets (the image is built from
-		// public sources, see caddy/versions.env). Cloud Build pushes via the
-		// build SA's ADC, no token needed.
-		arRepoId := "vault-images-" + ctx.Stack()
-		arRepo, err := artifactregistry.NewRepository(ctx, arRepoId, &artifactregistry.RepositoryArgs{
-			Location:     pulumi.String(arRegion),
-			Project:      pulumi.String(gcpProject),
-			RepositoryId: pulumi.String(arRepoId),
-			Format:       pulumi.String("DOCKER"),
-			Description:  pulumi.Sprintf("Custom Caddy images for the %s vaultwarden stack", ctx.Stack()),
-			Labels: pulumi.StringMap{
-				"managed-by": pulumi.String("pulumi"),
-				"stack":      pulumi.String(ctx.Stack()),
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("create artifact registry repo: %w", err)
-		}
-
-		_, err = artifactregistry.NewRepositoryIamMember(ctx, arRepoId+"-public-reader", &artifactregistry.RepositoryIamMemberArgs{
-			Project:    pulumi.String(gcpProject),
-			Location:   arRepo.Location,
-			Repository: arRepo.RepositoryId,
-			Role:       pulumi.String("roles/artifactregistry.reader"),
-			Member:     pulumi.String("allUsers"),
-		})
-		if err != nil {
-			return fmt.Errorf("grant allUsers reader on AR repo: %w", err)
-		}
-
-		imageRepo := pulumi.Sprintf("%s-docker.pkg.dev/%s/%s/%s", arRegion, gcpProject, arRepoId, arImageName)
-
-		// Exports — consumed by Cloud Build and Ansible.
-		ctx.Export("serverID", server.ID())
-		ctx.Export("ipv4", server.Ipv4Address)
-		ctx.Export("ipv6", server.Ipv6Address)
-		ctx.Export("hostname", pulumi.String(hostname))
-		ctx.Export("fqdn", pulumi.String(dnsRecordName))
-		ctx.Export("firewallID", fw.ID())
-		ctx.Export("imageRepo", imageRepo)
-		ctx.Export("arRepoId", pulumi.String(arRepoId))
-		ctx.Export("arRegion", pulumi.String(arRegion))
-
-		return nil
-	})
+type Config struct {
+	Project           string
+	Region            string
+	Zone              string
+	MachineType       string
+	BootDiskGB        int
+	DataDiskGB        int
+	SnapshotRetention int
+	DeleteProtection  bool
 }
 
-// parsePulumiID converts a Pulumi resource ID (string) to the int IDs that
-// hcloud resources use. Hetzner IDs are numeric; the SDK still types them as
-// pulumi.IDOutput (string) at the API boundary.
-func parsePulumiID(id pulumi.ID) (int, error) {
-	var n int
-	if _, err := fmt.Sscanf(string(id), "%d", &n); err != nil {
-		return 0, fmt.Errorf("parse hcloud id %q: %w", string(id), err)
+func loadConfig(ctx *pulumi.Context) (*Config, error) {
+	gcpCfg := config.New(ctx, "gcp")
+	c := config.New(ctx, "vaultwarden")
+	cfg := &Config{
+		Project:           gcpCfg.Require("project"),
+		Region:            gcpCfg.Require("region"),
+		Zone:              c.Require("zone"),
+		MachineType:       c.Get("machineType"),
+		BootDiskGB:        c.GetInt("bootDiskGb"),
+		DataDiskGB:        c.GetInt("dataDiskGb"),
+		SnapshotRetention: c.GetInt("snapshotRetentionDays"),
+		// Off by default so disposable can destroy/up freely. Production sets
+		// it: the data disk becomes Pulumi-protected and both the disk and the
+		// instance refuse deletion at the API.
+		DeleteProtection: c.GetBool("deleteProtection"),
 	}
-	return n, nil
+	if cfg.MachineType == "" {
+		cfg.MachineType = "e2-small"
+	}
+	if cfg.BootDiskGB == 0 {
+		cfg.BootDiskGB = 20
+	}
+	if cfg.DataDiskGB == 0 {
+		cfg.DataDiskGB = 10
+	}
+	if cfg.SnapshotRetention == 0 {
+		cfg.SnapshotRetention = 7
+	}
+	return cfg, cfg.validate()
 }
 
-// validateBootstrapSshCidr rejects values that would obviously open public
-// SSH wider than intended. Empty is fine (rule is omitted). Otherwise must
-// be a single IPv4 /N where N >= 8 — a typo'd /0 or /4 isn't a real CIDR
-// for a single operator endpoint.
-func validateBootstrapSshCidr(v string) error {
-	if v == "" {
-		return nil
+// validate fails the preview, not the apply.
+func (c *Config) validate() error {
+	if len(c.Zone) <= len(c.Region) || c.Zone[:len(c.Region)] != c.Region {
+		return fmt.Errorf("zone %q is not in region %q", c.Zone, c.Region)
 	}
-	parts := strings.SplitN(v, "/", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("bootstrapSshCidr %q: must be IPv4/N", v)
+	if c.BootDiskGB < 20 {
+		return fmt.Errorf("bootDiskGb %d: the AlmaLinux image needs at least 20", c.BootDiskGB)
 	}
-	octets := strings.Split(parts[0], ".")
-	if len(octets) != 4 {
-		return fmt.Errorf("bootstrapSshCidr %q: not IPv4", v)
-	}
-	for _, o := range octets {
-		n, err := strconv.Atoi(o)
-		if err != nil || n < 0 || n > 255 {
-			return fmt.Errorf("bootstrapSshCidr %q: bad octet %q", v, o)
-		}
-	}
-	mask, err := strconv.Atoi(parts[1])
-	if err != nil || mask < 8 || mask > 32 {
-		return fmt.Errorf("bootstrapSshCidr %q: mask /%s rejected (require /8..32)", v, parts[1])
+	if c.DataDiskGB < 10 {
+		return fmt.Errorf("dataDiskGb %d: pd-balanced minimum is 10", c.DataDiskGB)
 	}
 	return nil
+}
+
+func main() { pulumi.Run(program) }
+
+func program(ctx *pulumi.Context) error {
+	cfg, err := loadConfig(ctx)
+	if err != nil {
+		return err
+	}
+	stack := ctx.Stack()
+	name := "vault-" + stack
+
+	// Owned by platform/ (and named by its AddressName convention). Looked up,
+	// so the A/AAAA records never move when this stack is destroyed and rebuilt.
+	v4, err := gcpcompute.LookupAddress(ctx, &gcpcompute.LookupAddressArgs{
+		Name: name + "-ipv4", Region: &cfg.Region, Project: &cfg.Project,
+	})
+	if err != nil {
+		return fmt.Errorf("look up %s-ipv4 (is the stack active in platform/?): %w", name, err)
+	}
+	v6, err := gcpcompute.LookupAddress(ctx, &gcpcompute.LookupAddressArgs{
+		Name: name + "-ipv6", Region: &cfg.Region, Project: &cfg.Project,
+	})
+	if err != nil {
+		return fmt.Errorf("look up %s-ipv6: %w", name, err)
+	}
+	if v6.Subnetwork == "" {
+		return fmt.Errorf("%s-ipv6 has no subnetwork; it must be an external IPv6 VM address", name)
+	}
+
+	protect := pulumi.Protect(cfg.DeleteProtection)
+
+	// Separate from the boot disk so replacing the instance never touches the
+	// vault. A pd-balanced disk can grow in place later, never shrink.
+	disk, err := gcpcompute.NewDisk(ctx, name+"-data", &gcpcompute.DiskArgs{
+		Project:     pulumi.String(cfg.Project),
+		Name:        pulumi.String(name + "-data"),
+		Zone:        pulumi.String(cfg.Zone),
+		Size:        pulumi.Int(cfg.DataDiskGB),
+		Type:        pulumi.String("pd-balanced"),
+		Description: pulumi.String("Vaultwarden /data: db.sqlite3, attachments, sends"),
+		Labels:      labels(stack),
+	}, protect)
+	if err != nil {
+		return err
+	}
+
+	// Crash-consistent safety net under the restic backups (which are the
+	// portable, off-provider copy). Kept even if the disk is deleted.
+	policy, err := gcpcompute.NewResourcePolicy(ctx, name+"-snapshots", &gcpcompute.ResourcePolicyArgs{
+		Project: pulumi.String(cfg.Project),
+		Name:    pulumi.String(name + "-daily-snapshots"),
+		Region:  pulumi.String(cfg.Region),
+		SnapshotSchedulePolicy: &gcpcompute.ResourcePolicySnapshotSchedulePolicyArgs{
+			Schedule: &gcpcompute.ResourcePolicySnapshotSchedulePolicyScheduleArgs{
+				DailySchedule: &gcpcompute.ResourcePolicySnapshotSchedulePolicyScheduleDailyScheduleArgs{
+					DaysInCycle: pulumi.Int(1),
+					// After the 02:30 UTC restic run, so the snapshot also holds
+					// that night's consistent db-backup.sqlite3.
+					StartTime: pulumi.String("03:00"),
+				},
+			},
+			RetentionPolicy: &gcpcompute.ResourcePolicySnapshotSchedulePolicyRetentionPolicyArgs{
+				MaxRetentionDays:   pulumi.Int(cfg.SnapshotRetention),
+				OnSourceDiskDelete: pulumi.String("KEEP_AUTO_SNAPSHOTS"),
+			},
+			SnapshotProperties: &gcpcompute.ResourcePolicySnapshotSchedulePolicySnapshotPropertiesArgs{
+				StorageLocations: pulumi.String(cfg.Region),
+				Labels:           labels(stack),
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := gcpcompute.NewDiskResourcePolicyAttachment(ctx, name+"-data-snapshots", &gcpcompute.DiskResourcePolicyAttachmentArgs{
+		Project: pulumi.String(cfg.Project),
+		Name:    policy.Name,
+		Disk:    disk.Name,
+		Zone:    pulumi.String(cfg.Zone),
+	}); err != nil {
+		return err
+	}
+
+	vm, err := gcpcompute.NewInstance(ctx, name, &gcpcompute.InstanceArgs{
+		Project:     pulumi.String(cfg.Project),
+		Name:        pulumi.String(name),
+		Zone:        pulumi.String(cfg.Zone),
+		MachineType: pulumi.String(cfg.MachineType),
+		Tags:        pulumi.ToStringArray([]string{NetworkTag}),
+		Description: pulumi.String("Vaultwarden + Caddy as rootless podman quadlets on AlmaLinux 10; configured by Ansible"),
+		Labels:      labels(stack),
+
+		BootDisk: &gcpcompute.InstanceBootDiskArgs{
+			InitializeParams: &gcpcompute.InstanceBootDiskInitializeParamsArgs{
+				Image: pulumi.String(BootImage),
+				Size:  pulumi.Int(cfg.BootDiskGB),
+				Type:  pulumi.String("pd-balanced"),
+			},
+		},
+		AttachedDisks: gcpcompute.InstanceAttachedDiskArray{
+			&gcpcompute.InstanceAttachedDiskArgs{
+				Source:     disk.ID(),
+				DeviceName: pulumi.String(DataDiskDeviceName),
+				Mode:       pulumi.String("READ_WRITE"),
+			},
+		},
+
+		NetworkInterfaces: gcpcompute.InstanceNetworkInterfaceArray{
+			&gcpcompute.InstanceNetworkInterfaceArgs{
+				Subnetwork: pulumi.String(v6.Subnetwork),
+				StackType:  pulumi.String("IPV4_IPV6"),
+				AccessConfigs: gcpcompute.InstanceNetworkInterfaceAccessConfigArray{
+					&gcpcompute.InstanceNetworkInterfaceAccessConfigArgs{
+						NatIp: pulumi.String(v4.Address),
+					},
+				},
+				Ipv6AccessConfigs: gcpcompute.InstanceNetworkInterfaceIpv6AccessConfigArray{
+					&gcpcompute.InstanceNetworkInterfaceIpv6AccessConfigArgs{
+						NetworkTier:              pulumi.String("PREMIUM"),
+						ExternalIpv6:             pulumi.String(v6.Address),
+						ExternalIpv6PrefixLength: pulumi.String(fmt.Sprint(v6.PrefixLength)),
+					},
+				},
+			},
+		},
+
+		// Deliberately no ServiceAccount: see the package comment.
+
+		Metadata: pulumi.StringMap{
+			// SSH access follows IAM (OS Login) instead of metadata keys...
+			"enable-oslogin":         pulumi.String("TRUE"),
+			"block-project-ssh-keys": pulumi.String("TRUE"),
+			// ...and the guest agent publishes its SSH host keys here, which
+			// scripts/ansible-iap.sh turns into a pinned known_hosts.
+			"enable-guest-attributes": pulumi.String("TRUE"),
+		},
+
+		ShieldedInstanceConfig: &gcpcompute.InstanceShieldedInstanceConfigArgs{
+			EnableSecureBoot:          pulumi.Bool(true),
+			EnableVtpm:                pulumi.Bool(true),
+			EnableIntegrityMonitoring: pulumi.Bool(true),
+		},
+
+		// Machine-type changes stop/resize/start in place instead of failing.
+		AllowStoppingForUpdate: pulumi.Bool(true),
+		DeletionProtection:     pulumi.Bool(cfg.DeleteProtection),
+	})
+	if err != nil {
+		return err
+	}
+
+	// Consumed by scripts/ansible-iap.sh and the runbook.
+	ctx.Export("instanceName", vm.Name)
+	ctx.Export("zone", pulumi.String(cfg.Zone))
+	ctx.Export("project", pulumi.String(cfg.Project))
+	ctx.Export("ipv4", pulumi.String(v4.Address))
+	ctx.Export("ipv6", pulumi.String(v6.Address))
+	ctx.Export("dataDisk", disk.Name)
+	return nil
+}
+
+func labels(stack string) pulumi.StringMap {
+	return pulumi.StringMap{
+		"app":        pulumi.String("vaultwarden"),
+		"stack":      pulumi.String(stack),
+		"managed-by": pulumi.String("pulumi"),
+	}
 }

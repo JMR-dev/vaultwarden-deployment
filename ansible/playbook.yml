@@ -1,26 +1,39 @@
 ---
-# Site playbook. Apply with:
+# Site playbook. Don't call ansible-playbook directly -- the host is reachable
+# only over IAP with OS Login, which scripts/ansible-iap.sh sets up (ephemeral
+# key, pinned host keys, IAP ProxyCommand):
 #
-#   ansible-galaxy install -r requirements.yml
-#   ansible-playbook -i inventory/disposable.yml playbook.yml \
-#       --extra-vars "caddy_image=$(cd ../pulumi && pulumi stack output imageRepo):latest"
+#   scripts/ansible-iap.sh <stack> -e caddy_image=<registry>/caddy:<stack> [ansible args]
 #
-# The controller (operator laptop OR Cloud Build) must be authed to GCP via
-# ADC — `gcloud auth application-default login` locally, or the Cloud Build
-# SA identity when running under cloudbuild.yaml. The secrets role uses
-# `gcloud secrets versions access` to pull from Google Cloud Secret Manager.
+# The controller (CI runner or operator laptop) must be authed to GCP: the
+# secrets roles shell out to `gcloud secrets versions access`.
 
 - name: Vaultwarden host configuration
   hosts: all
   become: true
-  gather_facts: true
+  # Facts need python3; gather them after the raw bootstrap below.
+  gather_facts: false
 
   pre_tasks:
+    # AlmaLinux 10 is dnf4 (python-based), so python3 is normally present.
+    # Guard anyway: a missing interpreter fails every module with an opaque
+    # error, and raw is the only thing that works without one.
+    - name: Ensure python3 is present
+      ansible.builtin.raw: command -v python3 >/dev/null || dnf -y install python3 python3-dnf
+      register: python_bootstrap
+      changed_when: "'Installed' in python_bootstrap.stdout"
+      tags: [always]
+
+    - name: Gather facts
+      ansible.builtin.setup:
+      tags: [always]
+
     - name: Verify SELinux is enforcing
       ansible.builtin.command: getenforce
       changed_when: false
       register: selinux_status
       failed_when: "'Enforcing' not in selinux_status.stdout"
+      tags: [always]
 
   roles:
     - role: base
@@ -29,8 +42,6 @@
       tags: [podman]
     - role: mail
       tags: [mail]
-    - role: wireguard
-      tags: [wireguard, network]
     - role: nftables
       tags: [nftables, network]
     - role: fail2ban

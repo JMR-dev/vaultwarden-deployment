@@ -22,23 +22,19 @@
     name: "{{ epel_packages }}"
     state: present
 
-# Hetzner cloud-init mounts the attached volume at /mnt/HC_Volume_<id>. We
-# don't care about the ugly path; we bind-mount it to /data so every other
-# role + every quadlet sees the same stable path.
-#
-# Retry: a Pulumi-fresh box may still be running cloud-init when the
-# playbook reaches this task. 12 × 10s = 2 min covers the typical mkfs +
-# mount window on a fresh ext4 volume.
-- name: Discover Hetzner volume mount
-  ansible.builtin.shell:
-    cmd: |
-      set -euo pipefail
-      findmnt -ln -o TARGET /mnt/HC_Volume_* | head -n1
-  register: hc_volume_mount
-  changed_when: false
-  retries: 12
-  delay: 10
-  until: hc_volume_mount.stdout != ""
+# The GCE data disk (pulumi/main.go) arrives raw on first boot. Make a
+# filesystem only if there is none: `filesystem` never reformats without
+# force, which is what keeps a VM replacement from wiping the vault.
+- name: Wait for the data disk to appear
+  ansible.builtin.wait_for:
+    path: "{{ vault_data_device }}"
+    timeout: 120
+
+- name: Ensure ext4 on the data disk (never reformats)
+  community.general.filesystem:
+    dev: "{{ vault_data_device }}"
+    fstype: ext4
+    opts: -L vault-data
 
 - name: Ensure /data exists
   ansible.builtin.file:
@@ -46,13 +42,66 @@
     state: directory
     mode: "0750"
 
-- name: Bind-mount Hetzner volume to /data
+# Mounted by its stable by-id path. nofail keeps a missing disk from dropping
+# the box into emergency mode (no console without the serial port); the
+# Vaultwarden quadlet's `mountpoint -q /data` guard is what stops the app from
+# starting on an empty boot-disk /data in that case.
+- name: Mount the data disk at /data
   ansible.posix.mount:
-    src: "{{ hc_volume_mount.stdout }}"
+    src: "{{ vault_data_device }}"
     path: "{{ vault_data_dir }}"
-    fstype: none
-    opts: bind,nofail,x-systemd.requires-mounts-for={{ hc_volume_mount.stdout }}
+    fstype: ext4
+    opts: defaults,nofail,discard
     state: mounted
+
+# GCE images ship with no swap, and an e2-small (2 GB) running Caddy+CRS,
+# Vaultwarden and dnf can be OOM-killed mid-request on a burst. Ballast, not
+# working memory -- hence swappiness 10; steady swapping means a bigger
+# machine type. dd, not fallocate: fallocated files can carry unwritten
+# extents that mkswap accepts and swapon then refuses.
+- name: Create swap file
+  ansible.builtin.command:
+    cmd: dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+    creates: /swapfile
+  register: swapfile_created
+
+- name: Swap file permissions
+  ansible.builtin.file:
+    path: /swapfile
+    mode: "0600"
+    owner: root
+    group: root
+
+- name: Format swap file  # noqa: no-handler -- must run before "Activate swap", not at play end
+  ansible.builtin.command: mkswap /swapfile
+  when: swapfile_created is changed
+  changed_when: true
+
+- name: Swap in fstab
+  ansible.posix.mount:
+    src: /swapfile
+    path: none
+    fstype: swap
+    opts: sw
+    state: present
+
+- name: Activate swap
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      # grep without -q: an early exit could SIGPIPE swapon and, under
+      # pipefail, wrongly take the || branch on an already-active swap.
+      swapon --show=NAME --noheadings | grep -x /swapfile >/dev/null || swapon /swapfile
+    executable: /bin/bash
+  changed_when: false
+
+- name: Low swappiness (swap is ballast)
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: "10"
+    sysctl_file: /etc/sysctl.d/90-vaultwarden-swappiness.conf
+    state: present
+    reload: true
 
 - name: Verify SELinux is enforcing
   ansible.builtin.command: getenforce

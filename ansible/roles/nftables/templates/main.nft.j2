@@ -1,13 +1,22 @@
 #!/usr/sbin/nft -f
 # Managed by Ansible.
 #
-# Host-level filter layer. Hetzner Cloud Firewall (L3/L4, configured in Pulumi)
-# is the outer redundant layer. Fail2Ban hooks into this table at runtime and
-# adds f2b-<jail> chains with a jump from input.
+# Host-level filter layer. The VPC firewall (platform/main.go) is the outer,
+# deliberately redundant layer.
+#
+# This file owns exactly one table and touches nothing else -- never
+# `flush ruleset`. fail2ban keeps its ban sets in tables of its own, and a
+# flush (which `systemctl reload|restart nftables` also does on EL) silently
+# drops every active ban. The declare / delete / define idiom below makes
+# `nft -f` of this file an idempotent replace of our table only.
+#
+# Rootless podman forwards published ports in userspace, so traffic to
+# Caddy's :443 terminates on the host and is filtered by this input chain.
 
-flush ruleset
+table inet vaultwarden_filter
+delete table inet vaultwarden_filter
 
-table inet filter {
+table inet vaultwarden_filter {
     chain input {
         type filter hook input priority filter; policy drop;
 
@@ -16,36 +25,25 @@ table inet filter {
 
         iif "lo" accept
 
-        # ICMP / ICMPv6 — diagnostics.
+        # ICMP / ICMPv6: diagnostics, and IPv6 can't work without neighbour
+        # discovery and packet-too-big.
         ip protocol icmp accept
         ip6 nexthdr ipv6-icmp accept
 
-        # HTTPS — public.
+        # DHCPv6 replies: GCE hands out the instance's IPv6 address by DHCPv6.
+        ip6 saddr fe80::/10 udp dport 546 accept
+
+        # HTTPS: public.
         tcp dport 443 accept
 
-        # WireGuard — public.
-        udp dport {{ wg_port }} accept
-
-        # SSH — WG subnet always allowed.
-        ip saddr {{ wg_subnet }} tcp dport 22 accept
-{% for cidr in nftables_extra_ssh_cidrs | default([]) %}
-        # SSH from {{ cidr }} (extra, e.g. Cloud Build's outbound IP for the deploy).
-        ip saddr {{ cidr }} tcp dport 22 accept
-{% endfor %}
-
-        # Fail2Ban inserts a jump to f2b-<jail> chains at runtime; nothing to
-        # declare here.
+        # SSH: only IAP TCP forwarding. There is no other way in.
+        ip saddr {{ iap_range }} tcp dport 22 accept
 
         # Everything else: log a sampled drop for debugging, then drop.
         limit rate 5/minute log prefix "nft-drop: " level info
         counter drop
     }
 
-    chain forward {
-        type filter hook forward priority filter; policy drop;
-    }
-
-    chain output {
-        type filter hook output priority filter; policy accept;
-    }
+    # No forward chain: nothing is routed through this host, and a drop-policy
+    # forward chain here would also drop anything another table accepts.
 }

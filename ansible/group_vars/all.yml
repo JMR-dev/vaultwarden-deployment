@@ -1,9 +1,10 @@
 ---
-# Defaults shared across all hosts. Override per-stack in inventory vars.
+# Defaults shared across all hosts. Per-stack values (stack, vault_fqdn) live
+# in inventory/<stack>.yml.
 
 timezone: UTC
 
-# Packages installed by the `base` role. EPEL provides msmtp/restic/wireguard-tools.
+# Packages installed by the `base` role. EPEL provides msmtp/restic/fail2ban.
 base_packages:
   - vim-enhanced
   - jq
@@ -20,21 +21,39 @@ epel_packages:
   - restic
   - msmtp
   - msmtp-sendmail
-  - wireguard-tools
   - fail2ban
   # Deliberately NOT fail2ban-firewalld: it ships /etc/fail2ban/jail.d/00-
   # firewalld.conf which overrides banaction to firewallcmd-rich-rules.
   # We use nftables-multiport directly (set in jail.local).
 
-# Google Cloud Secret Manager — where Ansible pulls secrets from. The
-# controller (operator laptop or Cloud Build runner) must be authed to GCP
-# via ADC. Override gcp_project in inventory if the disposable + production
-# stacks live in different projects.
+# Rootless container user + data disk.
+vault_user: vaultwarden
+vault_uid: 1100
+vault_data_dir: /data
+# GCE exposes an attached disk as /dev/disk/by-id/google-<device_name>; the
+# device name is set in pulumi/main.go (DataDiskDeviceName).
+vault_data_device: /dev/disk/by-id/google-vault-data
+
+# Google Cloud Secret Manager -- where Ansible pulls secrets from, on the
+# controller (CI runner via the deployer key, or the operator's ADC). The VM
+# itself has no Google identity.
 gcp_project: vaultwarden-497422
 secret_prefix: vaultwarden-
+# Per-stack secrets (restic, healthchecks): vaultwarden-<stack>-<name>, so a
+# disposable host can't ping production's checks or touch its backups.
+stack_secret_prefix: "{{ secret_prefix }}{{ stack }}-"
 
-# Extra CIDRs allowed to reach SSH at the host nftables layer, on top of the
-# WG subnet. Pass via --extra-vars from the controller (e.g. Cloud Build sets
-# its outbound IP here for the duration of the deploy, matching the Pulumi-
-# managed Cloud Firewall hole). Empty list = WG-only.
-nftables_extra_ssh_cidrs: []
+# IAP TCP forwarding's fixed source range: the only path to SSH, and -- through
+# a tunnel to :443 -- the only source Caddy lets reach /admin. Must match
+# IAPRange in platform/main.go.
+iap_range: 35.235.240.0/20
+
+# Open account registration. Off except for the one deploy that creates the
+# operator's account on a fresh stack (deploy.yml `signups` input), after which
+# a normal redeploy locks it again. /admin is disabled by default, so this is
+# the only way to create the first account.
+vaultwarden_signups_allowed: false
+
+# dnf-automatic maintenance window.
+dnf_reboot_window: "04:00"
+dnf_reboot_dow: "Tue"

@@ -1,33 +1,11 @@
-# Example stack config for the disposable shakeout instance.
-#
-# This file is a TEMPLATE. Do not `pulumi up` against it as-is — every
-# value with angle brackets must be replaced first. The recommended flow
-# is `pulumi stack init disposable && pulumi config set …` for each line,
-# rather than editing this file directly (which would risk committing
-# secrets or environment-specific values).
-#
-# `vaultwarden:gcpArRegion` defaults to europe-west3 to match a typical
-# Hetzner nbg1/fsn1 footprint — cross-region image pulls otherwise pay
-# Atlantic latency on every `podman auto-update` tick.
-
+# Disposable shakeout stack: throwaway VM at disposable.vault.jasonmross.dev,
+# no real vault data. Every value is public. `pulumi stack init disposable
+# --secrets-provider gcpkms://...` adds the secretsprovider/encryptedkey lines;
+# commit them.
 config:
-  vaultwarden:location: nbg1
-  vaultwarden:serverType: cx22
-  vaultwarden:image: alma-10
-  vaultwarden:hostname: vault-disposable
-  vaultwarden:volumeSize: "20"
-  vaultwarden:sshPubkey: "ssh-ed25519 <BASE64-PUBKEY-MATERIAL> <comment>"
-  vaultwarden:wgPort: "51820"
-  # On first `pulumi up`, set this to your current public IP /32 so Ansible
-  # can SSH in. After WG is verified working from the host, set this to ""
-  # and re-run `pulumi up` to close public 22. /0..7 are rejected.
-  vaultwarden:bootstrapSshCidr: "<your-public-ipv4>/32"
-  vaultwarden:gcpProject: "<gcp-project-id>"
-  vaultwarden:dnsManagedZone: "<cloud-dns-zone-resource-name>"
-  vaultwarden:dnsRecordName: "<vault-disposable-fqdn-with-trailing-dot>"
-  vaultwarden:dnsTtl: "300"
-  vaultwarden:gcpArRegion: europe-west3
-  vaultwarden:arImageName: vaultwarden-caddy
-  # Leave false on disposable so destroy/up cycles work. Set true on
-  # production to refuse a stray `pulumi destroy` from wiping the volume.
+  gcp:project: vaultwarden-497422
+  gcp:region: us-east1
+  vaultwarden:zone: us-east1-b
+  vaultwarden:machineType: e2-small
+  # Off so `pulumi destroy && redeploy` cycles work.
   vaultwarden:deleteProtection: "false"

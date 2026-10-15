@@ -3,12 +3,9 @@
 #   * coraza-caddy/v2 — WAF middleware (runs DetectionOnly in this stack)
 #   * caddy-dns/googleclouddns — DNS-01 challenge provider for Cloud DNS
 #
-# All --build-arg values come from caddy/versions.env. Cloud Build sources
-# that file and passes the args through; for local builds the same file is
-# `set -a; . versions.env; set +a` before `podman build`.
-#
-# This file replaces the Dagger pipeline that previously owned the build.
-# Trivy still runs, just as a Cloud Build step rather than a Dagger step.
+# All --build-arg values come from caddy/versions.env; scripts/build-caddy.sh
+# sources that file, builds, and gates the result on a Trivy scan (used by
+# both Gitea Actions workflows and for local builds).
 
 ARG GO_BUILDER_IMAGE
 ARG RUNTIME_IMAGE
@@ -34,6 +31,11 @@ RUN mkdir -p /out && xcaddy build ${CADDY_VERSION} \
         --with ${CORAZA_CADDY_MODULE}@${CORAZA_CADDY_VERSION} \
         --with ${GCD_MODULE}@${GCD_VERSION} \
         --output /out/caddy
+
+# A dropped --with still builds a working Caddy -- one that fails only at
+# runtime (no WAF directive, no DNS-01 provider). Fail the build instead.
+RUN /out/caddy list-modules | grep -qx 'http.handlers.waf' \
+ && /out/caddy list-modules | grep -qx 'dns.providers.googleclouddns'
 
 FROM ${RUNTIME_IMAGE}
 
