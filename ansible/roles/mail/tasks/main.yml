@@ -2,10 +2,23 @@
 - name: Load msmtp credentials from Secret Manager
   ansible.builtin.set_fact:
     msmtp_secrets: >-
-      {{ lookup('community.general.pipe',
+      {{ lookup('ansible.builtin.pipe',
                 'gcloud secrets versions access latest --secret=' + secret_prefix + 'msmtp --project=' + gcp_project)
          | from_yaml }}
   no_log: true
+
+# Checked up front because the tasks below are no_log, which would hide a
+# missing-key error behind "output has been hidden".
+- name: Validate msmtp secret contents
+  ansible.builtin.assert:
+    that:
+      - msmtp_secrets.msmtp_smtp_host     | default('') | length > 0
+      - msmtp_secrets.msmtp_smtp_port     | default('') | string | length > 0
+      - msmtp_secrets.msmtp_smtp_user     | default('') | length > 0
+      - msmtp_secrets.msmtp_smtp_password | default('') | length > 0
+      - msmtp_secrets.msmtp_from          | default('') | length > 0
+      - msmtp_secrets.msmtp_alert_to      | default('') | length > 0
+    fail_msg: "{{ secret_prefix }}msmtp is missing one of the required keys (msmtp_smtp_host, msmtp_smtp_port, msmtp_smtp_user, msmtp_smtp_password, msmtp_from, msmtp_alert_to)."
 
 - name: Install msmtp config
   ansible.builtin.template:
@@ -30,7 +43,9 @@
     owner: root
     group: root
     mode: "0644"
-  notify: rebuild aliases
+  # No newaliases: msmtp reads this file as plain text on every send, and
+  # nothing on the box provides that postfix/sendmail binary anyway.
+  no_log: true
 
 # OnFailure email helper — units that fail trigger
 # status-email-root@<unit>.service which mails the failure with journal context.

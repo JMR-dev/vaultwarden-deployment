@@ -50,7 +50,7 @@
 - name: Load Healthchecks URLs from Secret Manager
   ansible.builtin.set_fact:
     hc_secrets: >-
-      {{ lookup('community.general.pipe',
+      {{ lookup('ansible.builtin.pipe',
                 'gcloud secrets versions access latest --secret=' + stack_secret_prefix + 'healthchecks --project=' + gcp_project)
          | from_yaml }}
   no_log: true

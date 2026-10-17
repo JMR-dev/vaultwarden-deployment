@@ -14,4 +14,3 @@ all:
     stack: production
     gce_zone: us-east1-b
     vault_fqdn: vault.jasonmross.dev
-    operator_email: jason.ross841@gmail.com

@@ -5,6 +5,11 @@ tls            on
 tls_starttls   on
 tls_trust_file /etc/pki/tls/certs/ca-bundle.crt
 logfile        /var/log/msmtp.log
+# Always send as msmtp_from, envelope and header. fail2ban passes
+# -f fail2ban@<host> and systemd-email writes From: systemd@<host>; most
+# providers reject a sender the account hasn't verified (Gmail rewrites it).
+allow_from_override off
+set_from_header on
 
 account default
 host           {{ msmtp_secrets.msmtp_smtp_host }}

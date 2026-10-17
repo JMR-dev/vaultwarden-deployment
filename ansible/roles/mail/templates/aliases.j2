@@ -1,4 +1,4 @@
 # Managed by Ansible.
 postmaster: root
 default:    root
-root:       {{ operator_email }}
+root:       {{ msmtp_secrets.msmtp_alert_to }}

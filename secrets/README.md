@@ -50,7 +50,10 @@ gcp_sa_dns_json: |
 
 ### `vaultwarden-msmtp`: outbound mail (system msmtp)
 
-GCE blocks outbound port 25; use 587 (STARTTLS) or 465.
+GCE blocks outbound port 25; use 587 (STARTTLS). `msmtp_alert_to` is where
+root's mail goes: unit-failure alerts, fail2ban ban notices and the restore-drill
+reminder. It lives here rather than in the inventory so no personal address
+is committed.
 
 ```yaml
 msmtp_smtp_host: smtp.example.com
@@ -58,7 +61,12 @@ msmtp_smtp_port: 587
 msmtp_smtp_user: vault@example.com
 msmtp_smtp_password: <smtp password>
 msmtp_from: vault@example.com
+msmtp_alert_to: you@example.com
 ```
+
+With Gmail: host `smtp.gmail.com`, user and from are your Gmail address, and
+the password is an [app password](https://myaccount.google.com/apppasswords)
+(needs 2-Step Verification), not your account password.
 
 ## Per stack (`<stack>` = `disposable` or `production`)
 

@@ -8,7 +8,9 @@
 [DEFAULT]
 banaction       = nftables-multiport
 banaction_allports = nftables-allports
-destemail       = root@localhost
+# Bare `root`, not root@localhost: msmtp only alias-expands recipients with no
+# '@', so root@localhost would skip /etc/aliases and be relayed (and bounce).
+destemail       = root
 sender          = fail2ban@{{ inventory_hostname }}
 mta             = sendmail
 action          = %(action_mwl)s

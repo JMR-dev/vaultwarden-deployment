@@ -20,7 +20,6 @@ base_packages:
 epel_packages:
   - restic
   - msmtp
-  - msmtp-sendmail
   - fail2ban
   # Deliberately NOT fail2ban-firewalld: it ships /etc/fail2ban/jail.d/00-
   # firewalld.conf which overrides banaction to firewallcmd-rich-rules.

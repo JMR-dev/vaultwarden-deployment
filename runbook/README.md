@@ -53,7 +53,9 @@ Steps marked ⚠ change real resources. Read the preview/diff before applying.
   (daily), restic check (weekly, Sun), dnf-automatic (weekly, Tue), podman
   auto-update (daily). Per stack so the disposable box can't keep
   production's checks green.
-- **SMTP**: outbound credentials on port **587** (GCE blocks 25) for msmtp.
+- **SMTP**: outbound credentials on port **587** (GCE blocks 25) for msmtp,
+  plus the address alerts go to (`msmtp_alert_to`, kept in the secret, not
+  the inventory).
 - **Gitea**: write access to `JMR-dev/vaultwarden-deployment` and a token
   with repo write scope (for `scripts/rotate-deployer-key.sh`).
 
