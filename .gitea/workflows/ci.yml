@@ -54,7 +54,8 @@ jobs:
           [[ "$(id -u)" == 0 ]] || sudo=sudo
           $sudo apt-get update -qq && $sudo apt-get install -y -qq --no-install-recommends shellcheck >/dev/null
           shellcheck -x scripts/*.sh backup/*.sh ansible/roles/mail/files/systemd-email \
-            ansible/roles/quadlets/files/vaultwarden-container-watch
+            ansible/roles/quadlets/files/vaultwarden-container-watch \
+            ansible/roles/fail2ban/files/fail2ban-digest
 
   caddy-image:
     runs-on: ubuntu-latest

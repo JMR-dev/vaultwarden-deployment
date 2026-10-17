@@ -8,12 +8,10 @@
 [DEFAULT]
 banaction       = nftables-multiport
 banaction_allports = nftables-allports
-# Bare `root`, not root@localhost: msmtp only alias-expands recipients with no
-# '@', so root@localhost would skip /etc/aliases and be relayed (and bounce).
-destemail       = root
-sender          = fail2ban@{{ inventory_hostname }}
-mta             = sendmail
-action          = %(action_mwl)s
+# Ban only, no mail: fail2ban-digest mails one daily summary instead. If a
+# mail action is ever added back, destemail must be bare `root` (msmtp only
+# alias-expands recipients with no '@').
+action          = %(action_)s
 bantime         = 1h
 findtime        = 10m
 maxretry        = 5
@@ -24,9 +22,7 @@ ignoreip        = 127.0.0.1/8 ::1 {{ iap_range }}
 
 [sshd]
 # Off on purpose. :22 admits only the IAP range (VPC firewall + nftables), and
-# that range is in ignoreip, so this jail could never ban anything. It is also
-# the only jail on backend=systemd, which silently matches nothing without
-# python3-systemd -- a jail that looks armed and isn't.
+# that range is in ignoreip, so this jail could never ban anything.
 enabled  = false
 port     = ssh
 logpath  = %(sshd_log)s

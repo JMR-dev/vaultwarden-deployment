@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Mail root one digest of the bans fail2ban made since the last digest.
+#
+#   fail2ban-digest            (run daily by fail2ban-digest.timer)
+#
+# fail2ban sends no mail itself (jail.local uses action_): a mail per ban can
+# burn through the SMTP provider's daily quota during a credential-stuffing
+# wave and crowd out the alerts that matter. Instead it logs to the journal
+# (fail2ban.local), and this reads the "[jail] Ban <ip>" notices after a saved
+# journal cursor, so every ban is reported exactly once, across missed runs
+# and reboots. "Restore Ban" (a ban re-applied from fail2ban's database on
+# restart) is not a new ban and is skipped. The cursor only advances once
+# sendmail has accepted the digest; a failed send leaves the bans for the next
+# run. No new bans, no mail.
+
+set -euo pipefail
+
+# Overridable only so the script can be tested off-host.
+state_dir="${DIGEST_STATE_DIR:-/var/lib/fail2ban-digest}"
+sendmail="${DIGEST_SENDMAIL:-/usr/sbin/sendmail}"
+max_lines=500
+cursor="${state_dir}/cursor"
+mkdir -p "$state_dir"
+host="$(uname -n)"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+if [[ -s "$cursor" ]]; then
+  cp "$cursor" "$tmp/cursor"
+else
+  # First run: start 24 hours back, not at the start of the journal. journalctl
+  # rejects --since alongside --cursor-file, so seed the cursor with the last
+  # entry before that point instead (none on a younger box: read it all).
+  journalctl --no-pager --quiet -u fail2ban.service --until=-24h -n 1 -o json \
+    | jq -r '.__CURSOR // empty' >"$tmp/cursor" || true
+  [[ -s "$tmp/cursor" ]] || rm -f "$tmp/cursor"
+fi
+
+journalctl --no-pager --quiet -u fail2ban.service -o json --cursor-file="$tmp/cursor" \
+  | jq -r '
+      (.MESSAGE | strings | capture("\\[(?<jail>[^\\]]+)\\] Ban (?<ip>[0-9A-Fa-f:.]+)$")) as $m
+      | [(.__REALTIME_TIMESTAMP | tonumber / 1000000 | floor | strftime("%Y-%m-%d %H:%M:%SZ")),
+         $m.jail, $m.ip]
+      | @tsv' >"$tmp/bans.tsv"
+
+total=$(wc -l <"$tmp/bans.tsv")
+if (( total > 0 )); then
+  first=$(head -n1 "$tmp/bans.tsv" | cut -f1)
+  last=$(tail -n1 "$tmp/bans.tsv" | cut -f1)
+  {
+    printf 'To: root\nSubject: [%s] fail2ban: %d ban(s) since the last digest\n\n' "$host" "$total"
+    printf '%d ban(s), %s to %s.\n\n' "$total" "$first" "$last"
+
+    printf 'By jail:\n'
+    cut -f2 "$tmp/bans.tsv" | sort | uniq -c | sort -rn | awk '{printf "  %-24s %6d\n", $2, $1}'
+
+    repeats=$(cut -f3 "$tmp/bans.tsv" | sort | uniq -c | sort -rn | awk '$1 > 1 {printf "  %-40s %6d\n", $2, $1}')
+    if [[ -n "$repeats" ]]; then
+      printf '\nBanned more than once (any jail):\n%s\n' "$repeats"
+    fi
+
+    printf '\nCurrently banned:\n'
+    # Informational only: a stopped fail2ban mustn't cost the digest.
+    jails=$(fail2ban-client status 2>/dev/null | sed -n 's/.*Jail list:[[:space:]]*//p' | tr -d ' ' | tr ',' ' ') || true
+    for jail in $jails; do
+      fail2ban-client status "$jail" 2>/dev/null \
+        | awk -v j="$jail" -F':[[:space:]]*' '/Currently banned/ {printf "  %-24s %6s\n", j, $2}' || true
+    done
+    [[ -n "$jails" ]] || printf '  (fail2ban-client unavailable)\n'
+
+    printf '\nAll bans (UTC):\n'
+    head -n "$max_lines" "$tmp/bans.tsv" | awk -F'\t' '{printf "  %s  %-20s %s\n", $1, $2, $3}'
+    if (( total > max_lines )); then
+      printf '  ... %d more; see: journalctl -u fail2ban -g " Ban "\n' "$((total - max_lines))"
+    fi
+  } >"$tmp/mail"
+  # Built in full first, so a failure above never sends half a digest.
+  "$sendmail" -t <"$tmp/mail"
+fi
+
+# Even with no bans the cursor moves on, past the entries just read.
+if [[ -s "$tmp/cursor" ]]; then
+  mv "$tmp/cursor" "$cursor"
+fi

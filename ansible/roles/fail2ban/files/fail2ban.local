@@ -1,0 +1,7 @@
+# Managed by Ansible.
+#
+# Log to the journal instead of /var/log/fail2ban.log: fail2ban-digest reads
+# the ban notices from it, and `journalctl -u fail2ban` then shows them.
+# python3-systemd, which this target needs, is a dependency of fail2ban-server.
+[Definition]
+logtarget = SYSTEMD-JOURNAL

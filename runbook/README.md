@@ -322,6 +322,11 @@ sudo nft list ruleset | grep -c f2b          # note the count
 sudo nft -f /etc/nftables/main.nft           # what every Ansible run does
 sudo nft list ruleset | grep -c f2b          # same count: bans survived
 sudo fail2ban-client set vaultwarden unbanip <ip>
+
+# The ban reaches you in the daily digest (fail2ban mails nothing per ban).
+# Send it now instead of waiting for 12:00 UTC:
+sudo systemctl start fail2ban-digest.service
+# Expect "[vault-disposable] fail2ban: N ban(s) since the last digest".
 ```
 
 The status output lies in both directions; only the drill proves it.
@@ -889,7 +894,9 @@ incompatibility with a new upstream version.
 | `/etc/vaultwarden/healthchecks.env`                    | HC ping URLs |
 | `/etc/nftables/main.nft`                               | Host firewall: `table inet vaultwarden_filter` only |
 | `/etc/sysconfig/nftables.conf`                         | Boot-time include of the above |
-| `/etc/fail2ban/jail.local`                             | fail2ban jails (`ignoreip` includes the IAP range) |
+| `/etc/fail2ban/jail.local`                             | fail2ban jails (`ignoreip` includes the IAP range); ban-only, no mail |
+| `/etc/fail2ban/fail2ban.local`                         | fail2ban logs to the journal (`journalctl -u fail2ban`) |
+| `/usr/local/sbin/fail2ban-digest`, `fail2ban-digest.timer` | daily mail of the bans since the last digest (12:00 UTC; cursor in `/var/lib/fail2ban-digest/`) |
 | `/etc/msmtprc`                                         | system msmtp config |
 | `/etc/aliases`                                         | root → operator |
 | `/usr/local/sbin/vaultwarden-backup`                   | backup driver script |

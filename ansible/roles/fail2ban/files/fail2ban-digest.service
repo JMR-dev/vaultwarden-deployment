@@ -1,0 +1,10 @@
+# Managed by Ansible. See /usr/local/sbin/fail2ban-digest.
+[Unit]
+Description=Mail a digest of fail2ban's bans since the last digest
+After=fail2ban.service
+OnFailure=status-email-root@%n.service
+
+[Service]
+Type=oneshot
+StateDirectory=fail2ban-digest
+ExecStart=/usr/local/sbin/fail2ban-digest

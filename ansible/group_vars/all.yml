@@ -20,10 +20,12 @@ base_packages:
 epel_packages:
   - restic
   - msmtp
-  - fail2ban
-  # Deliberately NOT fail2ban-firewalld: it ships /etc/fail2ban/jail.d/00-
-  # firewalld.conf which overrides banaction to firewallcmd-rich-rules.
-  # We use nftables-multiport directly (set in jail.local).
+  - fail2ban-server
+  # fail2ban-server, not the `fail2ban` metapackage: that also pulls in
+  # fail2ban-sendmail and fail2ban-firewalld, and the latter installs firewalld
+  # (enabled) plus /etc/fail2ban/jail.d/00-firewalld.conf, which sets
+  # banaction to firewallcmd-rich-rules. We use nftables-multiport directly
+  # (set in jail.local).
 
 # Rootless container user + data disk.
 vault_user: vaultwarden

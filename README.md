@@ -39,7 +39,7 @@ Operator guide: [`runbook/README.md`](runbook/README.md).
 | Updates | `dnf-automatic` (OS) + `podman auto-update` on floating `:<stack>` tags (containers) |
 | Backups | restic → Cloudflare R2 (per-stack bucket), plus daily GCE disk snapshots |
 | DNS | GCP Cloud DNS (zone `vault`, delegated from jasonmross.dev) |
-| Alerting | Healthchecks.io (timer pings) + msmtp email (`systemd OnFailure=`) |
+| Alerting | Healthchecks.io (timer pings) + msmtp email (`systemd OnFailure=`, daily fail2ban ban digest) |
 
 ## Build-it-disposably-first
 

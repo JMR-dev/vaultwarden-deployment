@@ -1,4 +1,13 @@
 ---
+- name: Log to the journal (read by fail2ban-digest)
+  ansible.builtin.copy:
+    src: fail2ban.local
+    dest: /etc/fail2ban/fail2ban.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart fail2ban
+
 - name: Install jail config
   ansible.builtin.template:
     src: jail.local.j2
@@ -54,3 +63,32 @@
     group: root
     mode: "0644"
   notify: reload systemd
+
+# One mail a day listing the bans, instead of a mail per ban (see the
+# script's header).
+- name: Install ban digest script
+  ansible.builtin.copy:
+    src: fail2ban-digest
+    dest: /usr/local/sbin/fail2ban-digest
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install ban digest units
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - fail2ban-digest.service
+    - fail2ban-digest.timer
+  notify: reload systemd
+
+- name: Enable ban digest timer
+  ansible.builtin.systemd:
+    name: fail2ban-digest.timer
+    enabled: true
+    state: started
+    daemon_reload: true

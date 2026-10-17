@@ -51,8 +51,8 @@ gcp_sa_dns_json: |
 ### `vaultwarden-msmtp`: outbound mail (system msmtp)
 
 GCE blocks outbound port 25; use 587 (STARTTLS). `msmtp_alert_to` is where
-root's mail goes: unit-failure alerts, fail2ban ban notices and the restore-drill
-reminder. It lives here rather than in the inventory so no personal address
+root's mail goes: unit-failure alerts, the daily fail2ban ban digest and the
+restore-drill reminder. It lives here rather than in the inventory so no personal address
 is committed.
 
 ```yaml

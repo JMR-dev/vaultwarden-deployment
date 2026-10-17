@@ -1,0 +1,13 @@
+# Managed by Ansible.
+[Unit]
+Description=Daily fail2ban ban digest
+
+[Timer]
+# The host clock is UTC: 12:00 UTC is morning in the US.
+OnCalendar=*-*-* 12:00:00 UTC
+# Catch up after downtime; the journal cursor keeps the window gap-free.
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target
