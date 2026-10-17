@@ -9,7 +9,9 @@ on:
 
 jobs:
   go:
-    runs-on: ubuntu-latest
+    # Compiling against the pulumi-gcp SDK is memory-hungry; the heavy pool
+    # is the runners' home for Pulumi builds (8 GiB, on demand).
+    runs-on: heavy
     strategy:
       matrix:
         module: [pulumi, platform]
@@ -58,7 +60,8 @@ jobs:
             ansible/roles/fail2ban/files/fail2ban-digest
 
   caddy-image:
-    runs-on: ubuntu-latest
+    # docker build needs a Docker daemon; ubuntu-latest job pods have none.
+    runs-on: docker
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.gitea/actions/setup

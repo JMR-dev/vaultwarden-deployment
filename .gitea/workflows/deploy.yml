@@ -71,7 +71,8 @@ jobs:
 
   image:
     needs: guard
-    runs-on: ubuntu-latest
+    # docker build/push needs a Docker daemon; ubuntu-latest job pods have none.
+    runs-on: docker
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.gitea/actions/setup
@@ -97,7 +98,9 @@ jobs:
 
   infra:
     needs: image
-    runs-on: ubuntu-latest
+    # On-demand nodes with room for Pulumi: a spot preemption halfway
+    # through `pulumi up` would leave the stack locked mid-change.
+    runs-on: heavy
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.gitea/actions/setup
