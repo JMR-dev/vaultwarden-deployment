@@ -22,6 +22,10 @@ jobs:
           tools: go
       - name: gofmt, vet, test, build
         working-directory: ${{ matrix.module }}
+        # Two packages at a time: compiling several pulumi-gcp packages at once
+        # (vet, test and build each compile) got the job OOM-killed at 8 GiB.
+        env:
+          GOFLAGS: -p=2
         run: |
           unformatted="$(gofmt -l .)"
           if [[ -n "$unformatted" ]]; then echo "gofmt needed: $unformatted"; exit 1; fi

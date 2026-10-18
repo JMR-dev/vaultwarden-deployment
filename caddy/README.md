@@ -1,7 +1,7 @@
 # Caddy build
 
 Custom Caddy image:
-- `github.com/corazawaf/coraza-caddy/v2 @ v2.5.0` (WAF, DetectionOnly)
+- `github.com/corazawaf/coraza-caddy/v2 @ v2.6.2` (WAF, DetectionOnly)
 - `github.com/caddy-dns/googleclouddns @ v1.1.0` (DNS-01 challenge provider)
 
 Pinned versions live in `versions.env`. Bumps are deliberate; the Coraza
@@ -40,10 +40,18 @@ scripts/build-caddy.sh vaultwarden-caddy:local    # needs docker (or podman-dock
 Useful when iterating on the Caddyfile — start the local image with
 `-v ./Caddyfile:/etc/caddy/Caddyfile:Z` and watch the boot logs.
 
-## Why pin Caddy v2.11.3
+## Why pin Caddy v2.11.4
 
-`coraza-caddy/v2 v2.5.0` declares `github.com/caddyserver/caddy v2.11.3` in
+`coraza-caddy/v2 v2.6.2` declares `github.com/caddyserver/caddy v2.11.4` in
 its `go.mod`. Bumping Caddy past what the WAF module targets risks a build
 break. Pinned + Trivy-gated rebuilds make every bump a reviewed event;
 `podman auto-update` would happily pull a broken `:<stack>` if we let CI
 publish one.
+
+## Pinned transitive modules
+
+When Trivy flags a fix that neither Caddy nor a plugin requires yet, pin the
+module in `GO_MODULE_PINS` (`versions.env`). Each entry becomes an xcaddy
+`--replace`, a `go.mod` replace with no plugin import. A replace also holds
+the module back from later upgrades, so drop the entry once Caddy or a plugin
+requires that version or newer.

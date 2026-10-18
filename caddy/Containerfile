@@ -18,6 +18,7 @@ ARG CORAZA_CADDY_MODULE
 ARG CORAZA_CADDY_VERSION
 ARG GCD_MODULE
 ARG GCD_VERSION
+ARG GO_MODULE_PINS
 
 ENV CGO_ENABLED=0
 ENV GOFLAGS=-trimpath
@@ -27,9 +28,12 @@ ENV PATH=/go/bin:/usr/local/go/bin:/usr/bin:/bin
 
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}
 
-RUN mkdir -p /out && xcaddy build ${CADDY_VERSION} \
+# Each GO_MODULE_PINS entry (module@version) becomes --replace module=module@version.
+RUN set --; for pin in ${GO_MODULE_PINS}; do set -- "$@" --replace "${pin%@*}=${pin}"; done; \
+    mkdir -p /out && xcaddy build ${CADDY_VERSION} \
         --with ${CORAZA_CADDY_MODULE}@${CORAZA_CADDY_VERSION} \
         --with ${GCD_MODULE}@${GCD_VERSION} \
+        "$@" \
         --output /out/caddy
 
 # A dropped --with still builds a working Caddy -- one that fails only at

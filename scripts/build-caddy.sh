@@ -34,6 +34,7 @@ DOCKER_BUILDKIT=1 docker build \
   --build-arg CORAZA_CADDY_VERSION="$CORAZA_CADDY_VERSION" \
   --build-arg GCD_MODULE="$GCD_MODULE" \
   --build-arg GCD_VERSION="$GCD_VERSION" \
+  --build-arg GO_MODULE_PINS="$GO_MODULE_PINS" \
   -t "$ref" \
   -f Containerfile .
 
