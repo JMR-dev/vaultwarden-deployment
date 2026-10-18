@@ -13,4 +13,4 @@ all:
   vars:
     stack: production
     gce_zone: us-east1-b
-    vault_fqdn: vault.jasonmross.dev
+    vault_fqdn: vault.jasonrossmedia.com

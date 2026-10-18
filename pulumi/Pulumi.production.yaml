@@ -1,4 +1,4 @@
-# Production stack: vault.jasonmross.dev. Every value is public.
+# Production stack: vault.jasonrossmedia.com. Every value is public.
 # `pulumi stack init production --secrets-provider gcpkms://...` adds the
 # secretsprovider/encryptedkey lines; commit them.
 config:

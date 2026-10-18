@@ -1,5 +1,6 @@
-# Disposable shakeout stack: throwaway VM at disposable.vault.jasonmross.dev,
-# no real vault data. Every value is public. `pulumi stack init disposable
+# Disposable test stack: a temporary VM at disposable.vault.jasonrossmedia.com,
+# brought up for a test cycle and destroyed after it (runbook §2.9). No real
+# vault data. Every value is public. `pulumi stack init disposable
 # --secrets-provider gcpkms://...` adds the secretsprovider/encryptedkey lines;
 # commit them.
 config:

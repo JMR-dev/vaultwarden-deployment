@@ -135,7 +135,13 @@ func program(ctx *pulumi.Context) error {
 	}
 
 	// Crash-consistent safety net under the restic backups (which are the
-	// portable, off-provider copy). Kept even if the disk is deleted.
+	// portable, off-provider copy). A protected stack keeps them even if the
+	// disk is deleted; an unprotected one is torn down and rebuilt on purpose,
+	// so its snapshots age out instead of piling up with every cycle.
+	onDiskDelete := "APPLY_RETENTION_POLICY"
+	if cfg.DeleteProtection {
+		onDiskDelete = "KEEP_AUTO_SNAPSHOTS"
+	}
 	policy, err := gcpcompute.NewResourcePolicy(ctx, name+"-snapshots", &gcpcompute.ResourcePolicyArgs{
 		Project: pulumi.String(cfg.Project),
 		Name:    pulumi.String(name + "-daily-snapshots"),
@@ -151,7 +157,7 @@ func program(ctx *pulumi.Context) error {
 			},
 			RetentionPolicy: &gcpcompute.ResourcePolicySnapshotSchedulePolicyRetentionPolicyArgs{
 				MaxRetentionDays:   pulumi.Int(cfg.SnapshotRetention),
-				OnSourceDiskDelete: pulumi.String("KEEP_AUTO_SNAPSHOTS"),
+				OnSourceDiskDelete: pulumi.String(onDiskDelete),
 			},
 			SnapshotProperties: &gcpcompute.ResourcePolicySnapshotSchedulePolicySnapshotPropertiesArgs{
 				StorageLocations: pulumi.String(cfg.Region),

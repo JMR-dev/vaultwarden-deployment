@@ -13,4 +13,4 @@ all:
   vars:
     stack: disposable
     gce_zone: us-east1-b
-    vault_fqdn: disposable.vault.jasonmross.dev
+    vault_fqdn: disposable.vault.jasonrossmedia.com

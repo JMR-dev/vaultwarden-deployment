@@ -128,6 +128,25 @@ func TestDeleteProtectionFollowsConfig(t *testing.T) {
 	}
 }
 
+// A stack that is destroyed and rebuilt on purpose must not leave a week of
+// snapshots behind each cycle; a protected one keeps them past its disk.
+func TestSnapshotsOutliveOnlyProtectedDisks(t *testing.T) {
+	for _, tc := range []struct{ val, want string }{
+		{"true", "KEEP_AUTO_SNAPSHOTS"},
+		{"false", "APPLY_RETENTION_POLICY"},
+	} {
+		m, err := run(t, "production", map[string]string{"vaultwarden:deleteProtection": tc.val})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := m.one(t, "gcp:compute/resourcePolicy:ResourcePolicy").inputs["snapshotSchedulePolicy"].ObjectValue()
+		got := p["retentionPolicy"].ObjectValue()["onSourceDiskDelete"]
+		if !got.IsString() || got.StringValue() != tc.want {
+			t.Errorf("deleteProtection=%s: onSourceDiskDelete = %v, want %s", tc.val, got, tc.want)
+		}
+	}
+}
+
 func TestNamesFollowStack(t *testing.T) {
 	m, err := run(t, "production", nil)
 	if err != nil {

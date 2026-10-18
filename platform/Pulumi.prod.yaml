@@ -8,16 +8,25 @@
 config:
   gcp:project: vaultwarden-497422
   gcp:region: us-east1
+  # Cloud DNS zone `vault` = vault.jasonrossmedia.com. (gcloud-made, delegated
+  # from jasonrossmedia.com in project stoat-burrow).
   vaultwarden-platform:dnsZone: vault
   vaultwarden-platform:appStateBucket: vaultwarden-497422-pulumi-state
   vaultwarden-platform:kmsKey: projects/vaultwarden-497422/locations/global/keyRings/pulumi/cryptoKeys/stacks
   vaultwarden-platform:r2Location: enam
   vaultwarden-platform:caddyDnsServiceAccount: vaultwarden-caddy-dns@vaultwarden-497422.iam.gserviceaccount.com
   vaultwarden-platform:zoneListerRole: projects/vaultwarden-497422/roles/dnsZoneLister
+  # Resend sending domain for the hosts' alert mail. Its records go in the zone.
+  vaultwarden-platform:mailDomain: vault.jasonrossmedia.com
+  # disposable is temporary: active only while a test cycle runs (runbook §2.9).
   vaultwarden-platform:stacks:
     - name: disposable
-      fqdn: disposable.vault.jasonmross.dev.
+      fqdn: disposable.vault.jasonrossmedia.com.
       active: true
     - name: production
-      fqdn: vault.jasonmross.dev.
+      fqdn: vault.jasonrossmedia.com.
       active: true
+  vaultwarden-platform:cloudflareAccountId:
+    secure: v1:80SRCzBX/Y5zgY3b:kFkssV18c4hJTDyA55LIC91NVgB1PAfwqs2Pk0pCL6RzqzHPfifMzhXhPjnWKGfD
+secretsprovider: gcpkms://projects/vaultwarden-497422/locations/global/keyRings/pulumi/cryptoKeys/stacks
+encryptedkey: CiQADi3ImtWJgV22f7SqvluujeizqrvvdlXVBnyV3Dx+JAxr9sQSSQA6q9Oqp3csopKlJSWiIJNKdrMP3pGY4hqcPN2ck+u14OHAN+tmdi1WQIECbKGfEcvt1a4gN5BwWyhaBTujerg6RiniCJV6C88=

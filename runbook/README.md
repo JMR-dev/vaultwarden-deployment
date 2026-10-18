@@ -8,7 +8,8 @@ file is the *how*, not the *why*.
 Shape of the system, in one paragraph: one AlmaLinux 10 GCE VM per stack
 (`vault-disposable`, `vault-production`) in `vaultwarden-497422`, us-east1-b.
 Two Pulumi projects: `platform/` (owner-run: network, static IPs, DNS, R2
-buckets, Artifact Registry, every IAM grant) and `pulumi/` (CI-run: the VM,
+buckets, the Resend mail domain, Artifact Registry, every IAM grant) and
+`pulumi/` (CI-run: the VM,
 its data disk, snapshots). Gitea Actions deploys with a deployer SA key —
 Gitea 1.27 can't mint Actions OIDC tokens — and that SA can rebuild the VM
 but can't grant IAM. Ansible configures the host over IAP + OS Login; there
@@ -38,8 +39,9 @@ Steps marked ⚠ change real resources. Read the preview/diff before applying.
   `curl`, `podman` (local Caddy builds, restore drill), `restic` (restore
   drill).
 - **GCP** — project `vaultwarden-497422`, already holding:
-  - Cloud DNS zone `vault` = `vault.jasonmross.dev.` (gcloud-made,
-    delegated from `jasonmross.dev`; deliberately not Pulumi-owned).
+  - Cloud DNS zone `vault` = `vault.jasonrossmedia.com.` (gcloud-made,
+    delegated by an NS record in zone `main` of project `stoat-burrow`,
+    which serves `jasonrossmedia.com`; deliberately not Pulumi-owned).
   - App state bucket `gs://vaultwarden-497422-pulumi-state`.
   - `vaultwarden-caddy-dns@` SA, whose JSON key Caddy uses for DNS-01
     (stored in the `vaultwarden-vaultwarden` secret as `gcp_sa_dns_json`).
@@ -48,14 +50,19 @@ Steps marked ⚠ change real resources. Read the preview/diff before applying.
 - **Cloudflare**: the account that will own the R2 buckets (note its account
   id), and an API token with **Workers R2 Storage: Edit** for Pulumi. It goes
   into the `vaultwarden-cloudflare-api-token` secret (§2.2); the deployer
-  never sees it.
-- **Healthchecks.io**: four checks **per stack** (eight total) — backup
-  (daily), restic check (weekly, Sun), dnf-automatic (weekly, Tue), podman
-  auto-update (daily). Per stack so the disposable box can't keep
-  production's checks green.
-- **SMTP**: outbound credentials on port **587** (GCE blocks 25) for msmtp,
-  plus the address alerts go to (`msmtp_alert_to`, kept in the secret, not
-  the inventory).
+  never sees it, and neither do the hosts (§2.4).
+- **Healthchecks.io**: four checks **per stack** (eight total) in the
+  `jasonrossmedia.com` project, named `vaultwarden-<stack>-<job>` and tagged
+  `vaultwarden <stack>`, on cron schedules (UTC) matching the timers: backup
+  daily 02:30, restic check Sun 03:30, dnf-automatic Tue 04:00, podman
+  auto-update daily 00:00. Per stack so the disposable box can't keep
+  production's checks green. Keep the project's read-write API key at hand
+  for pausing disposable's checks (§2.9).
+- **Resend** sends the alert mail (port **587**; GCE blocks 25): a
+  full-access API key for `platform/`, which manages the sending domain
+  `vault.jasonrossmedia.com` (secret `vaultwarden-resend-api-key`), plus the
+  address alerts go to (`msmtp_alert_to`, kept in the secret, not the
+  inventory). The hosts get their own sending-only key (§2.3).
 - **Gitea**: write access to `JMR-dev/vaultwarden-deployment` and a token
   with repo write scope (for `scripts/rotate-deployer-key.sh`).
 
@@ -73,9 +80,11 @@ podman run --rm -it docker.io/vaultwarden/server /vaultwarden hash
 
 ## 2. First-time bootstrap
 
-The point of the disposable stack is to flush out platform surprises on a VM
-you don't mind destroying. Iterate destroy → redeploy until the stack stands
-up with zero hand-intervention, then promote to production.
+`disposable` is a temporary stack, not a long-lived staging environment: it
+exists for one test cycle (§2.9) and is destroyed after it. The first cycle
+flushes out platform surprises on a VM you don't mind destroying. Iterate
+destroy → redeploy until the stack stands up with zero hand-intervention,
+then promote to production.
 
 Order matters: each step needs the previous one's resources.
 
@@ -96,15 +105,16 @@ Schemas and `gcloud secrets versions add` commands are in
 `secrets/README.md`. Before the platform stack:
 
 - `vaultwarden-cloudflare-api-token` — the R2-edit token from §1.
+- `vaultwarden-resend-api-key` — the full-access Resend key from §1.
 
 Before the first deploy (can be done in parallel with §2.3):
 
 - `vaultwarden-vaultwarden` — already has a version; confirm with
   `gcloud secrets versions list vaultwarden-vaultwarden`.
-- `vaultwarden-msmtp`
 - `vaultwarden-disposable-healthchecks`, `vaultwarden-production-healthchecks`
 
-The restic secrets need the R2 buckets first (§2.4).
+`vaultwarden-msmtp` needs the mail domain (§2.3) and the restic secrets need
+the R2 buckets (§2.4).
 
 ### 2.3 ⚠ Platform stack
 
@@ -117,9 +127,11 @@ pulumi config set --secret vaultwarden-platform:cloudflareAccountId <account-id>
 
 export CLOUDFLARE_API_TOKEN=$(gcloud secrets versions access latest \
   --secret=vaultwarden-cloudflare-api-token --project vaultwarden-497422)
+export RESEND_API_KEY=$(gcloud secrets versions access latest \
+  --secret=vaultwarden-resend-api-key --project vaultwarden-497422)
 pulumi preview --diff
 pulumi up
-unset CLOUDFLARE_API_TOKEN
+unset CLOUDFLARE_API_TOKEN RESEND_API_KEY
 ```
 
 Commit the `secretsprovider`/`encryptedkey`/encrypted-account-id lines that
@@ -128,15 +140,31 @@ Commit the `secretsprovider`/`encryptedkey`/encrypted-account-id lines that
 Creates: VPC `vaultwarden` + dual-stack subnet, firewall (443 public, ICMP,
 22 from IAP `35.235.240.0/20` only), per-stack static IPv4/IPv6 and A/AAAA
 records, per-stack R2 buckets `vaultwarden-backups-<stack>` (protected),
-AR repo `vaultwarden`, the `vaultwarden-deployer@` SA and every grant.
-`pulumi stack output` shows the bucket names and `caddyImage`.
+the Resend domain `vault.jasonrossmedia.com` (protected) with its DKIM and
+return-path records, AR repo `vaultwarden`, the `vaultwarden-deployer@` SA
+and every grant. `pulumi up` waits until Resend has verified the domain
+(usually minutes). `pulumi stack output` shows the bucket names,
+`caddyImage` and `mailDomainId`.
+
+Then give the hosts their own mail key: in Resend, **API Keys → Create**,
+permission **Sending access**, domain `vault.jasonrossmedia.com`. It is the
+`msmtp_smtp_password` in `vaultwarden-msmtp` (schema in `secrets/README.md`).
+Never give the hosts the full-access key.
 
 ### 2.4 R2 tokens and restic secrets
 
 In the Cloudflare dashboard: **R2 → Manage R2 API Tokens → Create token**,
-permission **Object Read & Write**, scoped to **one** bucket. Do it twice,
-once per bucket, so a compromised disposable host can't touch production's
-backups. Each yields an Access Key ID and Secret Access Key.
+permission **Object Read & Write**, scoped to the two
+`vaultwarden-backups-*` buckets. Both stacks share it. That's a deliberate
+trade-off: a compromised disposable host could delete production's backups,
+though not read them, since each stack has its own `restic_password`. For
+full isolation, make one token per bucket instead. The token yields an
+Access Key ID and Secret Access Key.
+
+Never use the platform's Cloudflare token here. R2's S3 credentials are
+derived from an API token (key id = token id, secret = SHA-256 of the
+token), so that token's S3 pair reaches every bucket in the account, and
+the deployer can read the restic secrets.
 
 Then add `vaultwarden-<stack>-restic` (schema in `secrets/README.md`):
 
@@ -179,8 +207,8 @@ select a stack whose config file lacks them.
 
 ### 2.7 Confirm branch protection on `main`
 
-`deploy.yml` refuses a production deploy from any ref but `main`, and a push
-to `main` deploys disposable — so `main` must be protected **on Gitea**.
+`deploy.yml` refuses a production deploy from any ref but `main`, so `main`
+must be protected **on Gitea**.
 `repo_config_settings` only ever configured the old GitHub repo. Check
 **Settings → Branches** in the Gitea UI (or
 `GET /api/v1/repos/JMR-dev/vaultwarden-deployment/branch_protections`) and
@@ -189,16 +217,15 @@ add a rule for `main` if there is none.
 ### 2.8 ⚠ First deploy (disposable)
 
 Gitea only offers **Run workflow** for workflows that exist on the default
-branch, so the first deploy comes from merging to `main`. Do it only after
-§2.1–§2.7 are done, or the push run fails at `image` for want of the key.
+branch, so `.gitea/workflows/deploy.yml` has to reach `main` first. Merging
+deploys nothing: `deploy.yml` is dispatch-only.
 
-1. Merge the branch carrying `.gitea/workflows/deploy.yml` into `main`. The
-   push itself deploys disposable with `signups=false`.
-2. Then Gitea → **Actions → deploy → Run workflow**: branch `main`,
-   `stack=disposable`, `signups=true` — that run opens registration.
+1. Merge the branch carrying `.gitea/workflows/deploy.yml` into `main`.
+2. Gitea → **Actions → deploy → Run workflow**: `stack=disposable`,
+   `signups=true`. That run opens registration.
 
-After that, any branch can be dispatched against disposable (production
-still only from `main`).
+Any branch can be dispatched against disposable; production only from
+`main`.
 
 The run is `guard → image → infra → configure`:
 
@@ -212,14 +239,50 @@ Expect ~10–15 minutes on a fresh VM.
 
 Then:
 
-1. Open `https://disposable.vault.jasonmross.dev` and create the test
+1. Open `https://disposable.vault.jasonrossmedia.com` and create the test
    account.
-2. Re-run the workflow with `signups=false` (any push to `main` also
-   redeploys disposable with signups off).
+2. Re-run the workflow with `signups=false`.
 3. Confirm a second registration attempt is refused.
 
 `/admin` is disabled by default, so the `signups` deploy is the only way to
 create the first account on a fresh stack.
+
+### 2.9 The disposable cycle (repeatable)
+
+Bring disposable up to test a change (a Caddy bump, an Ansible role, the
+drills in §3), then take it down. Between cycles nothing of it exists but
+its R2 bucket. The first cycle is §2.8 plus §3; later ones are just this.
+
+**Start**
+
+1. ⚠ In `platform/Pulumi.prod.yaml`, set `active: true` for disposable, then
+   run `pulumi up` in `platform/` (credentials as in §2.3) and commit. This
+   reserves its static IPs, writes its A/AAAA records and grants its
+   secrets.
+2. ⚠ Dispatch deploy: `stack=disposable`, from the branch under test, with
+   `signups=true` on a fresh VM, then once more with `signups=false`.
+3. Test. Its Healthchecks checks resume on their first ping.
+
+**End**
+
+1. ⚠ Destroy the app stack:
+   ```sh
+   cd pulumi && go build -o bin/vaultwarden .
+   pulumi login gs://vaultwarden-497422-pulumi-state
+   pulumi destroy -s disposable
+   ```
+   Its disk snapshots then age out on the 7-day retention instead of being
+   kept (`deleteProtection` is off).
+2. Pause its checks so they don't alert while it's gone:
+   `scripts/healthchecks-pause.sh disposable` (prompts for the
+   Healthchecks API key).
+3. ⚠ Set `active: false` for disposable, `pulumi up` in `platform/`, and
+   commit. That releases its static IPs (idle ones bill), drops its DNS
+   records and secret grants. The R2 bucket stays (protected), and so does
+   its restic repository, which the next cycle's backups reuse.
+
+Every cycle issues a new Let's Encrypt certificate for
+`disposable.vault.jasonrossmedia.com`, at most five a week (§3.1).
 
 ---
 
@@ -248,8 +311,8 @@ week for the same name, so don't loop this more than ~3 times a week.
 ### 3.2 TLS + web vault loads, over both address families
 
 ```sh
-curl -4 -sSf -o /dev/null -w '%{http_code}\n' https://disposable.vault.jasonmross.dev/
-curl -6 -sSf -o /dev/null -w '%{http_code}\n' https://disposable.vault.jasonmross.dev/
+curl -4 -sSf -o /dev/null -w '%{http_code}\n' https://disposable.vault.jasonrossmedia.com/
+curl -6 -sSf -o /dev/null -w '%{http_code}\n' https://disposable.vault.jasonrossmedia.com/
 ```
 
 Both 200 with a valid Let's Encrypt certificate (DNS-01 issued). A browser
@@ -275,14 +338,14 @@ gcloud compute ssh vault-disposable --zone us-east1-b --tunnel-through-iap --com
 # → succeeds
 
 # /admin is hidden publicly...
-curl -sS -o /dev/null -w '%{http_code}\n' https://disposable.vault.jasonmross.dev/admin
+curl -sS -o /dev/null -w '%{http_code}\n' https://disposable.vault.jasonrossmedia.com/admin
 # → 404
 # ...and reachable only through an IAP tunnel to :443:
 gcloud compute start-iap-tunnel vault-disposable 443 \
   --local-host-port=localhost:8443 --zone us-east1-b &
 curl -sS -o /dev/null -w '%{http_code}\n' \
-  --resolve disposable.vault.jasonmross.dev:8443:127.0.0.1 \
-  https://disposable.vault.jasonmross.dev:8443/admin
+  --resolve disposable.vault.jasonrossmedia.com:8443:127.0.0.1 \
+  https://disposable.vault.jasonrossmedia.com:8443/admin
 # → 200 (admin enabled: login page) — anything but 404
 kill %1
 ```
@@ -317,7 +380,7 @@ fix before continuing. The fix:
 ```sh
 gcloud compute ssh vault-disposable --zone us-east1-b --tunnel-through-iap
 sudo fail2ban-client set vaultwarden banip <an IP you control, not IAP>
-# From that IP: curl https://disposable.vault.jasonmross.dev/ → hangs/refused
+# From that IP: curl https://disposable.vault.jasonrossmedia.com/ → hangs/refused
 sudo nft list ruleset | grep -c f2b          # note the count
 sudo nft -f /etc/nftables/main.nft           # what every Ansible run does
 sudo nft list ruleset | grep -c f2b          # same count: bans survived
@@ -412,8 +475,8 @@ findmnt /data                     # the GCE data disk, ext4
 swapon --show                     # /swapfile
 ip -6 addr show scope global      # IPv6 came back via DHCPv6
 sudo systemctl --user -M vaultwarden@ status vaultwarden.service caddy.service
-curl -4 -sSf https://disposable.vault.jasonmross.dev/ >/dev/null && \
-curl -6 -sSf https://disposable.vault.jasonmross.dev/ >/dev/null && echo ok
+curl -4 -sSf https://disposable.vault.jasonrossmedia.com/ >/dev/null && \
+curl -6 -sSf https://disposable.vault.jasonrossmedia.com/ >/dev/null && echo ok
 ```
 
 Then prove the empty-`/data` guard (disposable only):
@@ -455,9 +518,11 @@ sudo tail /var/lib/vaultwarden/caddy/logs/coraza-audit.log
   gcloud projects get-iam-policy vaultwarden-497422 --flatten=bindings[].members \
     --filter='bindings.members:vaultwarden-deployer@' --format='value(bindings.role)'
   # → exactly compute.instanceAdmin.v1, compute.osAdminLogin, iap.tunnelResourceAccessor
-  gcloud secrets get-iam-policy vaultwarden-cloudflare-api-token --format=json \
-    | jq -r '.bindings[]?.members[]' | grep -c deployer
-  # → 0
+  for s in vaultwarden-cloudflare-api-token vaultwarden-resend-api-key; do
+    gcloud secrets get-iam-policy "$s" --format=json \
+      | jq -r '.bindings[]?.members[]' | grep -c deployer
+  done
+  # → 0, twice
   ```
   `platform/main_test.go` enforces the same allow-list on every CI run.
 
@@ -475,7 +540,7 @@ instance refuses API deletion). Prerequisites from §2 that are per stack:
    `stack=production`, `signups=true`. The image job promotes the
    already-scanned `caddy:<sha>` (if disposable built it) by moving the
    `caddy:production` tag.
-2. Create your real account at `https://vault.jasonmross.dev`.
+2. Create your real account at `https://vault.jasonrossmedia.com`.
 3. ⚠ Re-run with `signups=false`. Confirm registration is refused.
 4. Run the production-safe subset of §3: 3.2, 3.3, 3.4, 3.6 (backup run;
    the restore drill uses production's repo), 3.7 (email + Healthchecks),
@@ -497,7 +562,7 @@ it". Once clients repoint, hosted Bitwarden goes stale from day 0.
 
 ### 5.2 Import to Vaultwarden
 
-In `https://vault.jasonmross.dev`: **Tools → Import Data → Bitwarden (json)**.
+In `https://vault.jasonrossmedia.com`: **Tools → Import Data → Bitwarden (json)**.
 
 ### 5.3 Re-upload attachments manually
 
@@ -507,7 +572,7 @@ specifically — that's where attachments most often hide.
 ### 5.4 Repoint clients
 
 Browser extension, mobile app, desktop: settings → server URL →
-`https://vault.jasonmross.dev`. Log in fresh. Verify autofill works.
+`https://vault.jasonrossmedia.com`. Log in fresh. Verify autofill works.
 
 ### 5.5 Two-week window
 
@@ -640,19 +705,10 @@ Two long-lived keys exist. Rotate both on the same calendar reminder:
   gcloud iam service-accounts keys delete <old-key-id> --iam-account vaultwarden-caddy-dns@vaultwarden-497422.iam.gserviceaccount.com
   ```
 
-### Retiring the disposable stack
+### Testing a change on disposable
 
-Once production is live, either keep disposable as staging (~$20/mo) or
-retire it:
-
-1. ⚠ `cd pulumi && go build -o bin/vaultwarden . && pulumi login gs://vaultwarden-497422-pulumi-state && pulumi destroy -s disposable`
-2. ⚠ In `platform/Pulumi.prod.yaml` set `active: false` for disposable,
-   then `pulumi up` in `platform/` (with `CLOUDFLARE_API_TOKEN` as in
-   §2.3). That releases its static IPs (idle ones bill) and DNS records and
-   drops its secret grants. The R2 bucket is kept (protected).
-3. Remove the `push:` trigger from `.gitea/workflows/deploy.yml` so every
-   deploy is a deliberate dispatch. Otherwise every push to `main` fails
-   at the address lookup.
+disposable exists only during a test cycle. To bring it up and take it down
+again, see §2.9.
 
 ---
 
@@ -685,12 +741,14 @@ Three independent automated update channels plus the deliberate one.
 ### Caddy image — CI
 
 - Bump `caddy/versions.env` (Caddy core, Coraza, googleclouddns — bump
-  Caddy and Coraza together; see `caddy/README.md`), push to `main`.
+  Caddy and Coraza together; see `caddy/README.md`) on a branch, and run a
+  disposable cycle from it (§2.9).
 - deploy.yml builds, asserts both plugins are compiled in, Trivy-gates
   HIGH/CRITICAL, pushes `caddy:<sha>`, tags `caddy:disposable`, and rolls
   it out to disposable.
-- Promote: dispatch `stack=production` from `main` at the same commit. The
-  scanned `caddy:<sha>` is re-tagged `caddy:production`, not rebuilt.
+- Promote: merge (fast-forward, so `main` is the same commit), then
+  dispatch `stack=production` from `main`. The scanned `caddy:<sha>` is
+  re-tagged `caddy:production`, not rebuilt.
 
 ### Vaultwarden image
 
@@ -719,7 +777,7 @@ after 14 days.
 
 ```sh
 git revert <commit>
-git push        # main → disposable redeploys; dispatch production after checking it
+git push        # then dispatch the affected stack; nothing deploys on push
 ```
 
 ### Anything that would replace the VM or its data disk

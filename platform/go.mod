@@ -3,6 +3,7 @@ module github.com/jasonross/vaultwarden_deployment/platform
 go 1.26.6
 
 require (
+	gitea.jasonmross.dev/JMR-dev/pulumi-resend/sdk v0.1.0
 	github.com/pulumi/pulumi-cloudflare/sdk/v6 v6.21.0
 	github.com/pulumi/pulumi-gcp/sdk/v9 v9.37.0
 	github.com/pulumi/pulumi/sdk/v3 v3.266.0

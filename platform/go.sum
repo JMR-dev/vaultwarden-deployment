@@ -1,3 +1,5 @@
+gitea.jasonmross.dev/JMR-dev/pulumi-resend/sdk v0.1.0 h1:YRK8NG6UXHb5bLpPxZMirUQ4nTy3nDeiB9sQ/PN0YQQ=
+gitea.jasonmross.dev/JMR-dev/pulumi-resend/sdk v0.1.0/go.mod h1:+CWQugUKJlYvbr82QS7fbGCdRnJY8uiRmsnQzFXN6HE=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/HdrHistogram/hdrhistogram-go v1.1.2 h1:5IcZpTvzydCQeHzK4Ef/D5rrSqwxob0t8PQPMybUNFM=

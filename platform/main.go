@@ -4,7 +4,8 @@
 // Why a separate project: CI authenticates with a long-lived SA key (Gitea
 // 1.27 can't mint Actions OIDC tokens), so that key's blast radius is whatever
 // the deployer SA can do. Every IAM grant, every service account, DNS, the
-// network, the registry and the R2 buckets therefore live here, applied by the
+// network, the registry, the R2 buckets and the Resend mail domain therefore
+// live here, applied by the
 // owner with their own ADC. The deployer can create and replace the VM and
 // its disk, read the secrets Ansible renders, and push images -- nothing that
 // lets it widen its own access.
@@ -13,6 +14,12 @@
 // them): the Cloud DNS zone, both state buckets, the KMS key and every Secret
 // Manager secret (scripts/bootstrap-gcp.sh), and the Caddy DNS SA plus its key
 // (gcloud-made; only its grants are declared below).
+//
+// Run with both provider credentials from their owner-only secrets:
+//
+//	CLOUDFLARE_API_TOKEN=$(gcloud secrets versions access latest --secret=vaultwarden-cloudflare-api-token) \
+//	RESEND_API_KEY=$(gcloud secrets versions access latest --secret=vaultwarden-resend-api-key) \
+//	pulumi up
 package main
 
 import (
@@ -20,6 +27,7 @@ import (
 	"regexp"
 	"strings"
 
+	"gitea.jasonmross.dev/JMR-dev/pulumi-resend/sdk/go/resend"
 	"github.com/pulumi/pulumi-cloudflare/sdk/v6/go/cloudflare"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/artifactregistry"
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/compute"
@@ -95,6 +103,7 @@ type Config struct {
 	R2Location             string
 	CaddyDNSServiceAccount string
 	ZoneListerRole         string
+	MailDomain             string
 	Stacks                 []StackConfig
 }
 
@@ -113,6 +122,7 @@ func loadConfig(ctx *pulumi.Context) (*Config, error) {
 		R2Location:             c.Get("r2Location"),
 		CaddyDNSServiceAccount: c.Require("caddyDnsServiceAccount"),
 		ZoneListerRole:         c.Require("zoneListerRole"),
+		MailDomain:             c.Require("mailDomain"),
 	}
 	if cfg.R2Location == "" {
 		cfg.R2Location = "enam"
@@ -128,6 +138,9 @@ func (c *Config) validate() error {
 	}
 	if !strings.HasPrefix(c.KMSKey, "projects/") {
 		return fmt.Errorf("kmsKey must be a full resource id (projects/.../cryptoKeys/...)")
+	}
+	if strings.HasSuffix(c.MailDomain, ".") {
+		return fmt.Errorf("mailDomain %q is a Resend domain name: drop the trailing dot", c.MailDomain)
 	}
 	if len(c.Stacks) == 0 {
 		return fmt.Errorf("stacks is empty")
@@ -163,10 +176,14 @@ func program(ctx *pulumi.Context) error {
 	if err != nil {
 		return fmt.Errorf("look up DNS zone %q: %w", cfg.DNSZone, err)
 	}
+	inZone := func(fqdn string) bool { return fqdn == zone.DnsName || strings.HasSuffix(fqdn, "."+zone.DnsName) }
 	for _, s := range cfg.Stacks {
-		if s.FQDN != zone.DnsName && !strings.HasSuffix(s.FQDN, "."+zone.DnsName) {
+		if !inZone(s.FQDN) {
 			return fmt.Errorf("stack %q: fqdn %q is not inside zone %s", s.Name, s.FQDN, zone.DnsName)
 		}
+	}
+	if !inZone(cfg.MailDomain + ".") {
+		return fmt.Errorf("mailDomain %q is not inside zone %s, which must hold its records", cfg.MailDomain, zone.DnsName)
 	}
 
 	subnet, err := newNetwork(ctx, cfg)
@@ -197,6 +214,11 @@ func program(ctx *pulumi.Context) error {
 		return err
 	}
 
+	mail, err := newMailDomain(ctx, cfg, zone.Name)
+	if err != nil {
+		return err
+	}
+
 	stackOutputs := pulumi.Map{}
 	for _, s := range cfg.Stacks {
 		out, err := newStack(ctx, cfg, s, zone.Name, subnet, deployerMember)
@@ -210,8 +232,63 @@ func program(ctx *pulumi.Context) error {
 	ctx.Export("networkTag", pulumi.String(NetworkTag))
 	ctx.Export("caddyImage", pulumi.Sprintf("%s-docker.pkg.dev/%s/%s/caddy", repo.Location, cfg.Project, repo.RepositoryId))
 	ctx.Export("deployerEmail", deployer.Email)
+	ctx.Export("mailDomain", mail.Name)
+	ctx.Export("mailDomainId", mail.ID())
 	ctx.Export("stacks", stackOutputs)
 	return nil
+}
+
+// newMailDomain is the Resend sending domain for the hosts' alert mail
+// (msmtp): the domain, the three records Resend checks, and a verification
+// that waits until Resend sees them. The provider reads RESEND_API_KEY at
+// configure time and never stores it in state. The hosts get a separate
+// sending-only key scoped to this domain (mailDomainId), in vaultwarden-msmtp.
+func newMailDomain(ctx *pulumi.Context, cfg *Config, zoneName string) (*resend.Domain, error) {
+	domain, err := resend.NewDomain(ctx, "mail", &resend.DomainArgs{
+		Name: pulumi.String(cfg.MailDomain),
+	}, pulumi.Protect(true)) // a replacement issues a new DKIM key
+	if err != nil {
+		return nil, err
+	}
+
+	dkim := domain.DkimRecord.Elem()
+	mx := domain.SpfMxRecord.Elem()
+	spf := domain.SpfTxtRecord.Elem()
+	// Cloud DNS wants absolute names, quoted TXT values and dotted MX targets.
+	var records []pulumi.Resource
+	for _, r := range []struct {
+		name, typ string
+		fqdn      pulumi.StringOutput
+		rrdata    pulumi.StringOutput
+	}{
+		{"mail-dkim", "TXT", dkim.Fqdn(), pulumi.Sprintf(`"%s"`, dkim.Value())},
+		{"mail-return-path-mx", "MX", mx.Fqdn(), pulumi.Sprintf("%d %s.", mx.Priority().Elem(), mx.Value())},
+		{"mail-return-path-spf", "TXT", spf.Fqdn(), pulumi.Sprintf(`"%s"`, spf.Value())},
+	} {
+		rs, err := dns.NewRecordSet(ctx, r.name, &dns.RecordSetArgs{
+			Project:     pulumi.String(cfg.Project),
+			ManagedZone: pulumi.String(zoneName),
+			Name:        pulumi.Sprintf("%s.", r.fqdn),
+			Type:        pulumi.String(r.typ),
+			Ttl:         pulumi.Int(300),
+			Rrdatas:     pulumi.StringArray{r.rrdata},
+		})
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, rs)
+	}
+
+	_, err = resend.NewDomainVerification(ctx, "mail", &resend.DomainVerificationArgs{
+		DomainId: domain.ID().ToStringOutput(),
+		// Re-verify whenever a record value changes.
+		Triggers: pulumi.StringMap{
+			"dkim":   dkim.Value(),
+			"spfMx":  mx.Value(),
+			"spfTxt": spf.Value(),
+		},
+	}, pulumi.DependsOn(records))
+	return domain, err
 }
 
 // newNetwork builds a dual-stack VPC with the only three ways in: HTTPS from

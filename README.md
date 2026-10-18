@@ -38,12 +38,14 @@ Operator guide: [`runbook/README.md`](runbook/README.md).
 | DB | SQLite (single user) |
 | Updates | `dnf-automatic` (OS) + `podman auto-update` on floating `:<stack>` tags (containers) |
 | Backups | restic → Cloudflare R2 (per-stack bucket), plus daily GCE disk snapshots |
-| DNS | GCP Cloud DNS (zone `vault`, delegated from jasonmross.dev) |
-| Alerting | Healthchecks.io (timer pings) + msmtp email (`systemd OnFailure=`, daily fail2ban ban digest) |
+| DNS | GCP Cloud DNS (zone `vault`, delegated from jasonrossmedia.com) |
+| Alerting | Healthchecks.io (timer pings) + msmtp email via Resend (`systemd OnFailure=`, daily fail2ban ban digest) |
 
 ## Build-it-disposably-first
 
-Two app stacks: `disposable` (`disposable.vault.jasonmross.dev`, no real
-data) and `production` (`vault.jasonmross.dev`). Iterate destroy/redeploy on
-`disposable` until it stands up with zero hand-intervention, then promote to
-`production` (runbook §2–§4).
+Two app stacks: `disposable` (`disposable.vault.jasonrossmedia.com`, no real
+data) and `production` (`vault.jasonrossmedia.com`). disposable is temporary:
+bring it up to test a change, then destroy it (runbook §2.9). The first time,
+iterate destroy/redeploy on it until it stands up with zero hand-intervention,
+then promote to `production` (runbook §2–§4). Every deploy is a dispatch;
+nothing deploys on push.

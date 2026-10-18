@@ -36,6 +36,22 @@ func (m *mocks) NewResource(a pulumi.MockResourceArgs) (string, resource.Propert
 		out["address"] = resource.NewStringProperty("203.0.113.9")
 	case "gcp:serviceaccount/account:Account":
 		out["email"] = resource.NewStringProperty(DeployerID + "@demo.iam.gserviceaccount.com")
+	case "resend:index:Domain":
+		name := a.Inputs["name"].StringValue()
+		rr := func(fqdn, typ, value string, prio float64) resource.PropertyValue {
+			m := resource.PropertyMap{
+				"fqdn":  resource.NewStringProperty(fqdn),
+				"type":  resource.NewStringProperty(typ),
+				"value": resource.NewStringProperty(value),
+			}
+			if prio > 0 {
+				m["priority"] = resource.NewNumberProperty(prio)
+			}
+			return resource.NewObjectProperty(m)
+		}
+		out["dkimRecord"] = rr("resend._domainkey."+name, "TXT", "p=MIGfMA0GCSqGSIb3DQEB", 0)
+		out["spfMxRecord"] = rr("send."+name, "MX", "feedback-smtp.us-east-1.amazonses.com", 10)
+		out["spfTxtRecord"] = rr("send."+name, "TXT", "v=spf1 include:amazonses.com ~all", 0)
 	}
 	return a.Name + "_id", out, nil
 }
@@ -97,6 +113,7 @@ func baseConfig() map[string]string {
 		"vaultwarden-platform:cloudflareAccountId":    "0123456789abcdef",
 		"vaultwarden-platform:caddyDnsServiceAccount": "caddy@demo.iam.gserviceaccount.com",
 		"vaultwarden-platform:zoneListerRole":         "projects/demo/roles/dnsZoneLister",
+		"vaultwarden-platform:mailDomain":             "vault.example.org",
 		"vaultwarden-platform:stacks":                 stacksJSON,
 	}
 }
@@ -156,19 +173,31 @@ func TestDeployerHoldsOnlyAllowedRoles(t *testing.T) {
 	}
 }
 
+// ownerOnlySecrets hold this stack's own provider credentials (Cloudflare R2
+// admin, Resend full access). A deployer that could read them could delete the
+// backup buckets or the mail domain.
+var ownerOnlySecrets = []string{"vaultwarden-cloudflare-api-token", "vaultwarden-resend-api-key"}
+
 // Every secret granted must exist as a container (bootstrap creates them from
 // secret-names.txt, and a grant on a missing secret fails the apply), and the
-// owner-only Cloudflare token must never be granted to the deployer.
+// owner-only provider credentials must never be granted to the deployer.
 func TestSecretGrantsMatchSecretNames(t *testing.T) {
 	m := mustRun(t, baseConfig())
 	listed := readSecretNames(t, "../secrets/secret-names.txt")
+	for _, id := range ownerOnlySecrets {
+		if !listed[id] {
+			t.Errorf("owner-only secret %q is missing from secrets/secret-names.txt", id)
+		}
+	}
 	for _, r := range m.byType("gcp:secretmanager/secretIamMember:SecretIamMember") {
 		id := str(r, "secretId")
 		if !listed[id] {
 			t.Errorf("secret %q is granted but missing from secrets/secret-names.txt", id)
 		}
-		if strings.Contains(id, "cloudflare") {
-			t.Errorf("secret %q is owner-only and must not be granted", id)
+		for _, owner := range ownerOnlySecrets {
+			if id == owner {
+				t.Errorf("secret %q is owner-only and must not be granted", id)
+			}
 		}
 	}
 }
@@ -213,8 +242,44 @@ func TestInactiveStackKeepsOnlyItsBucket(t *testing.T) {
 			t.Errorf("inactive stack still grants %s", str(r, "secretId"))
 		}
 	}
-	if n := len(m.byType("gcp:dns/recordSet:RecordSet")); n != 2 {
-		t.Errorf("want A+AAAA for production only, got %d records", n)
+	addrRecords := 0
+	for _, r := range m.byType("gcp:dns/recordSet:RecordSet") {
+		if typ := str(r, "type"); typ == "A" || typ == "AAAA" {
+			addrRecords++
+		}
+	}
+	if addrRecords != 2 {
+		t.Errorf("want A+AAAA for production only, got %d address records", addrRecords)
+	}
+}
+
+// Resend checks exactly these records; Cloud DNS rejects relative names and
+// unquoted TXT data, and the verification must wait for the records.
+func TestMailDomainRecords(t *testing.T) {
+	m := mustRun(t, baseConfig())
+	if n := len(m.byType("resend:index:Domain")); n != 1 {
+		t.Fatalf("want 1 Resend domain, got %d", n)
+	}
+	want := map[string]string{
+		"mail-dkim":            `TXT resend._domainkey.vault.example.org. "p=MIGfMA0GCSqGSIb3DQEB"`,
+		"mail-return-path-mx":  `MX send.vault.example.org. 10 feedback-smtp.us-east-1.amazonses.com.`,
+		"mail-return-path-spf": `TXT send.vault.example.org. "v=spf1 include:amazonses.com ~all"`,
+	}
+	for _, r := range m.byType("gcp:dns/recordSet:RecordSet") {
+		w, ok := want[r.name]
+		if !ok {
+			continue
+		}
+		delete(want, r.name)
+		if got := strings.Join(append([]string{str(r, "type"), str(r, "name")}, strs(r, "rrdatas")...), " "); got != w {
+			t.Errorf("%s:\n got %s\nwant %s", r.name, got, w)
+		}
+	}
+	for name := range want {
+		t.Errorf("missing record %s", name)
+	}
+	if n := len(m.byType("resend:index:DomainVerification")); n != 1 {
+		t.Errorf("want 1 domain verification, got %d", n)
 	}
 }
 
@@ -223,6 +288,8 @@ func TestValidationRejectsBadConfig(t *testing.T) {
 		"gs:// prefix":      {"vaultwarden-platform:appStateBucket": "gs://demo-pulumi-state"},
 		"no trailing dot":   {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.org","active":true}]`},
 		"fqdn outside zone": {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.com.","active":true}]`},
+		"mail outside zone": {"vaultwarden-platform:mailDomain": "example.org"},
+		"mail with dot":     {"vaultwarden-platform:mailDomain": "vault.example.org."},
 		"bad stack name":    {"vaultwarden-platform:stacks": `[{"name":"Prod-1","fqdn":"vault.example.org.","active":true}]`},
 		"duplicate stack":   {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.org.","active":true},{"name":"prod","fqdn":"x.vault.example.org.","active":true}]`},
 	}

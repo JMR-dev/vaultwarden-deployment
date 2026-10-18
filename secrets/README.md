@@ -50,34 +50,39 @@ gcp_sa_dns_json: |
 
 ### `vaultwarden-msmtp`: outbound mail (system msmtp)
 
-GCE blocks outbound port 25; use 587 (STARTTLS). `msmtp_alert_to` is where
-root's mail goes: unit-failure alerts, the daily fail2ban ban digest and the
-restore-drill reminder. It lives here rather than in the inventory so no personal address
-is committed.
+Mail goes through Resend's SMTP relay. GCE blocks outbound port 25, so it
+uses 587 (STARTTLS). `msmtp_alert_to` is where root's mail goes: unit-failure
+alerts, the daily fail2ban ban digest and the restore-drill reminder. It
+lives here rather than in the inventory so no personal address is committed.
 
 ```yaml
-msmtp_smtp_host: smtp.example.com
+msmtp_smtp_host: smtp.resend.com
 msmtp_smtp_port: 587
-msmtp_smtp_user: vault@example.com
-msmtp_smtp_password: <smtp password>
-msmtp_from: vault@example.com
+msmtp_smtp_user: resend
+msmtp_smtp_password: <Resend API key: Sending access, domain vault.jasonrossmedia.com>
+msmtp_from: vaultwarden@vault.jasonrossmedia.com
 msmtp_alert_to: you@example.com
 ```
 
-With Gmail: host `smtp.gmail.com`, user and from are your Gmail address, and
-the password is an [app password](https://myaccount.google.com/apppasswords)
-(needs 2-Step Verification), not your account password.
+`msmtp_from` must be on the domain `platform/` verified with Resend
+(`mailDomain`). The password is a **sending-only** key restricted to that
+domain, never the full-access `vaultwarden-resend-api-key`.
 
 ## Per stack (`<stack>` = `disposable` or `production`)
 
-Separate per stack so a disposable host can neither ping production's
-Healthchecks nor read or delete production's backups.
+Separate per stack so a disposable host can't ping production's
+Healthchecks or decrypt production's backups.
 
 ### `vaultwarden-<stack>-restic`: backup destination
 
 `platform/` creates the R2 bucket `vaultwarden-backups-<stack>`. In the
 Cloudflare dashboard, create an R2 API token with **Object Read & Write**
-scoped to **that one bucket**. Its S3 credentials go here:
+scoped to the `vaultwarden-backups-*` buckets. Both stacks share it, so a
+disposable host could delete (not read) production's backups; a token per
+bucket closes that. Never use the platform's Cloudflare token: R2's S3
+credentials are derived from an API token (key id = token id, secret =
+SHA-256 of the token), so its pair reaches every bucket in the account.
+Its S3 credentials go here:
 
 ```yaml
 restic_repository: s3:https://<cloudflare-account-id>.r2.cloudflarestorage.com/vaultwarden-backups-<stack>
@@ -86,7 +91,8 @@ r2_access_key_id: <R2 access key>
 r2_secret_access_key: <R2 secret key>
 ```
 
-Lose `restic_password` and the backups are unreadable: keep an offline copy.
+Each stack has its own `restic_password`. Lose it and the backups are
+unreadable: keep an offline copy.
 
 ### `vaultwarden-<stack>-healthchecks`: per-timer ping URLs
 
@@ -97,8 +103,13 @@ hc_dnf_automatic_url:  https://hc-ping.com/<uuid>
 hc_podman_update_url:  https://hc-ping.com/<uuid>
 ```
 
-Create the four checks per stack, with periods matching the timers: backup
-daily, restic check weekly, dnf-automatic weekly, podman auto-update daily.
+The checks live in the `jasonrossmedia.com` Healthchecks.io project, named
+`vaultwarden-<stack>-<job>` and tagged `vaultwarden <stack>`, on cron
+schedules (UTC) matching the timers: backup `30 2 * * *`, restic check
+`30 3 * * 0`, dnf-automatic `0 4 * * 2` (follows `dnf_reboot_dow` and
+`dnf_reboot_window`), podman auto-update `0 0 * * *`. Graces of 2-3 hours
+cover the timers' random delays. disposable's are paused between test
+cycles (`scripts/healthchecks-pause.sh`).
 
 ## Owner-only
 
@@ -115,13 +126,20 @@ CLOUDFLARE_API_TOKEN=$(gcloud secrets versions access latest --secret=vaultwarde
 The CI deployer is deliberately **not** granted it (`platform/main_test.go`
 enforces this).
 
+### `vaultwarden-resend-api-key`
+
+A single raw value: a **full-access** Resend API key. Only the platform
+stack's Resend provider uses it, to manage the mail domain; it reads
+`RESEND_API_KEY` and keeps the key out of state. Not granted to the deployer
+either (`platform/main_test.go`).
+
 ## Not in Secret Manager: the CI deployer key
 
 `GCP_DEPLOYER_KEY` is a Gitea Actions repo secret holding a JSON key for
 `vaultwarden-deployer@`. It's a key rather than OIDC because Gitea 1.27
 can't mint Actions ID tokens. The deployer's grants (all in
 `platform/main.go`) let it rebuild the VM, read the secrets above (except the
-Cloudflare token), push images, and use IAP SSH. It can't grant IAM, create
+two owner-only ones), push images, and use IAP SSH. It can't grant IAM, create
 SAs, change DNS, or read platform state. Create and rotate it with
 `scripts/rotate-deployer-key.sh` (every 90 days).
 

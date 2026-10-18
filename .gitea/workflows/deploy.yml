@@ -1,7 +1,10 @@
 # Deploy one stack: Caddy image -> Pulumi (VM + disk) -> Ansible over IAP.
 #
-#   push to main (deploy paths)  -> disposable
-#   workflow_dispatch            -> disposable or production (production only from main)
+#   workflow_dispatch -> disposable (any ref) or production (main only)
+#
+# Dispatch only. disposable is a temporary stack that exists only during a test
+# cycle (runbook §2.9), so a push has nothing to deploy to; production changes
+# when you choose to dispatch it.
 #
 # Authenticates with the deployer SA key in the repo secret GCP_DEPLOYER_KEY
 # (Gitea 1.27 has no Actions OIDC). That SA can rebuild the VM and read the
@@ -11,17 +14,6 @@
 name: deploy
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - pulumi/**
-      - ansible/**
-      - caddy/**
-      - quadlets/**
-      - backup/**
-      - scripts/ansible-iap.sh
-      - scripts/build-caddy.sh
-      - .gitea/**
   workflow_dispatch:
     inputs:
       stack:
@@ -38,7 +30,7 @@ on:
         type: boolean
         default: false
 
-# Pushes don't populate `inputs`, so every use falls back to the push defaults.
+# The fallbacks match the dispatch defaults, in case `inputs` comes through empty.
 env:
   STACK: ${{ inputs.stack || 'disposable' }}
   ALLOW_REPLACE: ${{ inputs.allow_replace || 'false' }}

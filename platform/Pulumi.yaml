@@ -2,8 +2,8 @@ name: vaultwarden-platform
 runtime: go
 description: |
   Long-lived and privileged infrastructure for the vaultwarden deployment:
-  network, static addresses, DNS records, R2 backup buckets, the Artifact
-  Registry repo, and every IAM grant. Run by the owner, locally. The CI-run
+  network, static addresses, DNS records, R2 backup buckets, the Resend mail
+  domain, the Artifact Registry repo, and every IAM grant. Run by the owner, locally. The CI-run
   app stack (../pulumi) consumes it but cannot change it.
 
 config:
@@ -22,6 +22,8 @@ config:
     description: Email of the gcloud-made SA whose JSON key Caddy uses for DNS-01
   vaultwarden-platform:zoneListerRole:
     description: Custom role granting dns.managedZones.list (googleclouddns lists zones to find its own)
+  vaultwarden-platform:mailDomain:
+    description: Resend sending domain for the hosts' alert mail, no trailing dot; must be inside dnsZone, which gets its records
   vaultwarden-platform:stacks:
     description: |
       App stacks, as a list of {name, fqdn, active}. An inactive stack keeps its
