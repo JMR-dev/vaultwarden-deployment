@@ -45,7 +45,10 @@ concurrency:
 
 jobs:
   guard:
-    runs-on: ubuntu-latest
+    # A few seconds of bash. On ubuntu-latest it waited minutes for a pod slot
+    # and a burst node; the DinD runner on the always-on base node takes it at
+    # once, and image runs there next anyway.
+    runs-on: docker
     steps:
       - name: Validate stack and ref
         run: |
@@ -132,7 +135,9 @@ jobs:
 
   configure:
     needs: infra
-    runs-on: ubuntu-latest
+    # Same pool as infra: the node infra just freed is still up (scale-down
+    # waits ~10 min), so this skips booting a burst node from zero.
+    runs-on: heavy
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.gitea/actions/setup

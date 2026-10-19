@@ -1,11 +1,13 @@
-# Checks for every pull request and every non-main push. No secrets, no GCP
-# access: nothing here can change infrastructure. Deploys are deploy.yml.
+# Checks for every pull request. No secrets, no GCP access: nothing here can
+# change infrastructure. Deploys are deploy.yml.
+#
+# Pull requests only. A push trigger as well ran every check twice per commit
+# (push + pull_request), and those duplicate jobs held the shared runners while
+# deploys queued behind them. main only changes through checked PRs.
 name: ci
 
 on:
   pull_request:
-  push:
-    branches-ignore: [main]
 
 jobs:
   go:
