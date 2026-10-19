@@ -254,7 +254,18 @@ func newMailDomain(ctx *pulumi.Context, cfg *Config, zoneName string) (*resend.D
 	dkim := domain.DkimRecord.Elem()
 	mx := domain.SpfMxRecord.Elem()
 	spf := domain.SpfTxtRecord.Elem()
-	// Cloud DNS wants absolute names, quoted TXT values and dotted MX targets.
+	// Resend added a fourth record in 2026: a return-path CNAME (`rsend.<domain>`)
+	// that pulumi-resend v0.1.0 has no convenience output for, so take it from
+	// the full record list. Verification stays partial without it.
+	cname := domain.Records.ApplyT(func(rs []resend.DnsRecord) resend.DnsRecord {
+		for _, r := range rs {
+			if r.Type == "CNAME" && r.Record == "SPF" {
+				return r
+			}
+		}
+		return resend.DnsRecord{}
+	}).(resend.DnsRecordOutput)
+	// Cloud DNS wants absolute names, quoted TXT values and dotted MX/CNAME targets.
 	var records []pulumi.Resource
 	for _, r := range []struct {
 		name, typ string
@@ -264,6 +275,7 @@ func newMailDomain(ctx *pulumi.Context, cfg *Config, zoneName string) (*resend.D
 		{"mail-dkim", "TXT", dkim.Fqdn(), pulumi.Sprintf(`"%s"`, dkim.Value())},
 		{"mail-return-path-mx", "MX", mx.Fqdn(), pulumi.Sprintf("%d %s.", mx.Priority().Elem(), mx.Value())},
 		{"mail-return-path-spf", "TXT", spf.Fqdn(), pulumi.Sprintf(`"%s"`, spf.Value())},
+		{"mail-return-path-cname", "CNAME", cname.Fqdn(), pulumi.Sprintf("%s.", cname.Value())},
 	} {
 		rs, err := dns.NewRecordSet(ctx, r.name, &dns.RecordSetArgs{
 			Project:     pulumi.String(cfg.Project),
@@ -283,9 +295,10 @@ func newMailDomain(ctx *pulumi.Context, cfg *Config, zoneName string) (*resend.D
 		DomainId: domain.ID().ToStringOutput(),
 		// Re-verify whenever a record value changes.
 		Triggers: pulumi.StringMap{
-			"dkim":   dkim.Value(),
-			"spfMx":  mx.Value(),
-			"spfTxt": spf.Value(),
+			"dkim":     dkim.Value(),
+			"spfMx":    mx.Value(),
+			"spfTxt":   spf.Value(),
+			"spfCname": cname.Value(),
 		},
 	}, pulumi.DependsOn(records))
 	return domain, err

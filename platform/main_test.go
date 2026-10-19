@@ -40,9 +40,10 @@ func (m *mocks) NewResource(a pulumi.MockResourceArgs) (string, resource.Propert
 		name := a.Inputs["name"].StringValue()
 		rr := func(fqdn, typ, value string, prio float64) resource.PropertyValue {
 			m := resource.PropertyMap{
-				"fqdn":  resource.NewStringProperty(fqdn),
-				"type":  resource.NewStringProperty(typ),
-				"value": resource.NewStringProperty(value),
+				"fqdn":   resource.NewStringProperty(fqdn),
+				"type":   resource.NewStringProperty(typ),
+				"value":  resource.NewStringProperty(value),
+				"record": resource.NewStringProperty(map[bool]string{true: "DKIM", false: "SPF"}[strings.HasPrefix(fqdn, "resend.")]),
 			}
 			if prio > 0 {
 				m["priority"] = resource.NewNumberProperty(prio)
@@ -52,6 +53,10 @@ func (m *mocks) NewResource(a pulumi.MockResourceArgs) (string, resource.Propert
 		out["dkimRecord"] = rr("resend._domainkey."+name, "TXT", "p=MIGfMA0GCSqGSIb3DQEB", 0)
 		out["spfMxRecord"] = rr("send."+name, "MX", "feedback-smtp.us-east-1.amazonses.com", 10)
 		out["spfTxtRecord"] = rr("send."+name, "TXT", "v=spf1 include:amazonses.com ~all", 0)
+		out["records"] = resource.NewArrayProperty([]resource.PropertyValue{
+			out["dkimRecord"], out["spfMxRecord"], out["spfTxtRecord"],
+			rr("rsend."+name, "CNAME", "send.forge.rmta.net", 0),
+		})
 	}
 	return a.Name + "_id", out, nil
 }
@@ -264,6 +269,8 @@ func TestMailDomainRecords(t *testing.T) {
 		"mail-dkim":            `TXT resend._domainkey.vault.example.org. "p=MIGfMA0GCSqGSIb3DQEB"`,
 		"mail-return-path-mx":  `MX send.vault.example.org. 10 feedback-smtp.us-east-1.amazonses.com.`,
 		"mail-return-path-spf": `TXT send.vault.example.org. "v=spf1 include:amazonses.com ~all"`,
+		// Only in the full record list, not in a convenience output.
+		"mail-return-path-cname": `CNAME rsend.vault.example.org. send.forge.rmta.net.`,
 	}
 	for _, r := range m.byType("gcp:dns/recordSet:RecordSet") {
 		w, ok := want[r.name]
