@@ -35,6 +35,9 @@ inventory="ansible/inventory/${stack}.yml"
 [[ -f "${repo_root}/${inventory}" ]] || die "no inventory at ${inventory}"
 
 project="${GCP_PROJECT:-vaultwarden-497422}"
+# Some calls below (os-login ssh-keys) take no --project and need a default
+# one. CI's setup action sets it; an operator's gcloud may not.
+export CLOUDSDK_CORE_PROJECT="$project"
 instance="vault-${stack}"
 zone="$(awk '$1 == "gce_zone:" {print $2}' "${repo_root}/${inventory}")"
 [[ -n "$zone" ]] || die "gce_zone missing from ${inventory}"

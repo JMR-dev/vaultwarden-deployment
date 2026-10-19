@@ -1,16 +1,26 @@
 ---
 # firewalld and a hand-written nftables ruleset don't mix: a firewalld reload
 # rewrites the ruleset underneath us.
-- name: Gather service facts
-  ansible.builtin.service_facts:
-
+#
+# Keyed on systemd's LoadState, not service_facts. firewalld isn't installed
+# on these images, but fail2ban.service and netavark-firewalld-reload.service
+# reference it, so once they're loaded, service_facts lists a "not-found"
+# firewalld.service. The systemd module then fails on it: "Could not find the
+# requested service". Masking it anyway also keeps a later install inert.
 - name: Stop and mask firewalld
-  ansible.builtin.systemd:
-    name: firewalld.service
-    state: stopped
-    enabled: false
-    masked: true
-  when: "'firewalld.service' in ansible_facts.services"
+  ansible.builtin.shell:
+    cmd: |
+      set -eo pipefail
+      load="$(systemctl show firewalld.service -p LoadState --value)"
+      [[ "$load" == masked ]] && exit 0
+      if [[ "$load" == loaded ]]; then
+        systemctl disable --now firewalld.service
+      fi
+      systemctl mask firewalld.service
+      echo CHANGED
+    executable: /bin/bash
+  register: firewalld_mask
+  changed_when: "'CHANGED' in firewalld_mask.stdout"
 
 - name: Install nftables ruleset
   ansible.builtin.template:
