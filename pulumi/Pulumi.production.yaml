@@ -10,3 +10,5 @@ config:
   # Undoing either is a deliberate two-step act (pulumi state unprotect +
   # config change), never a stray `pulumi destroy`.
   vaultwarden:deleteProtection: "true"
+secretsprovider: gcpkms://projects/vaultwarden-497422/locations/global/keyRings/pulumi/cryptoKeys/stacks
+encryptedkey: CiQADi3ImvpVOUUbFt9jg/6s+M8mmeLgxxzJL5g+01Y2CoMqxt0SSQA6q9OqAPSTKXiHrQGZBb0El5tmUSUrOH+s8lrSvYe2dfRBGbALjX/7aggV1edvsxL3wQg4CZvOihYeEMhuWjdV31rVqmKDD0s=

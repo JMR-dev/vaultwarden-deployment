@@ -10,3 +10,5 @@ config:
   vaultwarden:machineType: e2-small
   # Off so `pulumi destroy && redeploy` cycles work.
   vaultwarden:deleteProtection: "false"
+secretsprovider: gcpkms://projects/vaultwarden-497422/locations/global/keyRings/pulumi/cryptoKeys/stacks
+encryptedkey: CiQADi3Imm3oVsATy1aUrYgXj+6I5FpK6VB4iQJDr73N82FOMAASSAA6q9OqhNoyPDOypZEU+VGxnRPUYwEwdpbcCnSCBI9lEuY1PxhNmVTN6zQkRlw902hPprjU+OM53K8UINFApfFXmQVeWRfpYw==
