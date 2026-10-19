@@ -45,6 +45,48 @@
     - restart vaultwarden
     - restart caddy
 
+# /admin's token, only while admin_token_argon2 is set (Podman refuses an
+# empty secret; see quadlets/vaultwarden.container). Skipped when the secrets
+# role didn't run (e.g. --tags quadlets alone), so a partial run never turns
+# /admin off by mistake.
+- name: Ensure the vaultwarden.container drop-in directory exists
+  ansible.builtin.file:
+    path: "/var/lib/{{ vault_user }}/.config/containers/systemd/vaultwarden.container.d"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0755"
+  when:
+    - vw_secrets is defined
+    - vw_secrets.admin_token_argon2 | default('', true) | length > 0
+
+- name: Add the vaultwarden admin-token drop-in
+  ansible.builtin.copy:
+    dest: "/var/lib/{{ vault_user }}/.config/containers/systemd/vaultwarden.container.d/admin-token.conf"
+    content: |
+      [Container]
+      Secret=vaultwarden-admin-token,type=env,target=ADMIN_TOKEN
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0644"
+  when:
+    - vw_secrets is defined
+    - vw_secrets.admin_token_argon2 | default('', true) | length > 0
+  notify:
+    - reload user systemd
+    - restart vaultwarden
+
+- name: Remove the admin-token drop-in while admin is disabled
+  ansible.builtin.file:
+    path: "/var/lib/{{ vault_user }}/.config/containers/systemd/vaultwarden.container.d/admin-token.conf"
+    state: absent
+  when:
+    - vw_secrets is defined
+    - vw_secrets.admin_token_argon2 | default('', true) | length == 0
+  notify:
+    - reload user systemd
+    - restart vaultwarden
+
 # 0644 here too — quadlet files are read by Podman's quadlet generator
 # (running as the rootless user's systemd-user-generator), which crosses
 # the same namespace boundary as the container mounts above. 0640 risks

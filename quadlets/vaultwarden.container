@@ -42,11 +42,12 @@ Environment=EXTENDED_LOGGING=true
 Environment=USE_SYSLOG=false
 Environment=WEBSOCKET_ENABLED=true
 
-# ADMIN_TOKEN is sourced from a Podman secret. Empty value = admin disabled
-# (the plan's default). To enable /admin, add admin_token_argon2 to the
-# vaultwarden-vaultwarden secret in Secret Manager; the Podman secret
-# rotates on next Ansible run.
-Secret=vaultwarden-admin-token,type=env,target=ADMIN_TOKEN
+# No ADMIN_TOKEN here, so /admin is disabled (the default). Podman refuses
+# an empty secret, so the token can't simply be left blank. When
+# admin_token_argon2 is set in the vaultwarden-vaultwarden secret, the Ansible
+# quadlets role adds the drop-in vaultwarden.container.d/admin-token.conf with
+# `Secret=vaultwarden-admin-token,type=env,target=ADMIN_TOKEN`, and the
+# secrets role creates that Podman secret.
 
 # Health gate for `podman auto-update`: with Notify=healthy the unit only
 # counts as started once the healthcheck passes, so an image that starts but
