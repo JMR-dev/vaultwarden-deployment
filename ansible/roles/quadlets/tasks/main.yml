@@ -28,6 +28,18 @@
         -e caddy_image=us-east1-docker.pkg.dev/vaultwarden-497422/vaultwarden/caddy:<stack>
       (platform's `caddyImage` output plus ":<stack>"; deploy.yml passes it).
 
+# The static vaultwarden.container can't read group_vars, but its
+# SecurityLabelLevel must match the level the base role gives /data. A
+# mismatch fails closed (Vaultwarden can't open /data), but catch it here
+# with a clear message instead.
+- name: Vaultwarden's quadlet runs at vaultwarden_selinux_level
+  ansible.builtin.assert:
+    that:
+      - ('SecurityLabelLevel=' ~ vaultwarden_selinux_level) in lookup('ansible.builtin.file', playbook_dir ~ '/../quadlets/vaultwarden.container')
+    fail_msg: >-
+      quadlets/vaultwarden.container's SecurityLabelLevel differs from
+      vaultwarden_selinux_level ({{ vaultwarden_selinux_level }}) in group_vars/all.yml.
+
 # Plain copy, not ansible.posix.synchronize: synchronize opens its own
 # rsync-over-ssh connection, which doesn't reliably inherit the IAP
 # ProxyCommand and ephemeral OS Login key scripts/ansible-iap.sh sets up.
@@ -215,6 +227,122 @@
     enabled: true
     state: started
     daemon_reload: true
+
+# The signup window closes itself (group_vars vaultwarden_signups_allowed).
+# A signups=true deploy arms a timer for a fixed wall-clock time, computed on
+# the host. It's Persistent, so a reboot in between closes the window at
+# boot. Any other deploy disarms it: the env file above already says false.
+- name: Install the signup-window closer
+  ansible.builtin.copy:
+    src: vaultwarden-signups-close
+    dest: /usr/local/sbin/vaultwarden-signups-close
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install its service
+  ansible.builtin.copy:
+    src: vaultwarden-signups-close.service
+    dest: /etc/systemd/system/vaultwarden-signups-close.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: When the signup window closes
+  ansible.builtin.command:
+    cmd: date -u -d "+{{ vaultwarden_signups_window_minutes | int }} min" "+%Y-%m-%d %H:%M:%S UTC"
+  register: signups_close_at
+  changed_when: false
+  when: vaultwarden_signups_allowed | bool
+
+- name: Arm the signup-window timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/vaultwarden-signups-close.timer
+    content: |
+      [Unit]
+      Description=Close the Vaultwarden signup window opened by a signups=true deploy
+
+      [Timer]
+      OnCalendar={{ signups_close_at.stdout }}
+      Persistent=true
+      AccuracySec=1min
+
+      [Install]
+      WantedBy=timers.target
+    owner: root
+    group: root
+    mode: "0644"
+  when: vaultwarden_signups_allowed | bool
+
+- name: Start the signup-window timer
+  ansible.builtin.systemd:
+    name: vaultwarden-signups-close.timer
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  when: vaultwarden_signups_allowed | bool
+
+- name: Disarm the signup-window timer
+  ansible.builtin.shell:
+    cmd: |
+      set -eo pipefail
+      timer=/etc/systemd/system/vaultwarden-signups-close.timer
+      [[ -e "$timer" ]] || exit 0
+      systemctl disable --now vaultwarden-signups-close.timer
+      rm -f "$timer"
+      systemctl daemon-reload
+      echo CHANGED
+    executable: /bin/bash
+  register: signups_timer_disarm
+  changed_when: "'CHANGED' in signups_timer_disarm.stdout"
+  when: not (vaultwarden_signups_allowed | bool)
+
+# Caddy's :443 is a systemd socket handed to the container, so Caddy sees
+# real client addresses (files/caddy.socket says why).
+- name: User systemd unit directory
+  ansible.builtin.file:
+    path: "/var/lib/{{ vault_user }}/.config/systemd/user"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0755"
+
+- name: Install caddy.socket
+  ansible.builtin.copy:
+    src: caddy.socket
+    dest: "/var/lib/{{ vault_user }}/.config/systemd/user/caddy.socket"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_user }}"
+    mode: "0644"
+  register: caddy_socket_unit
+  notify: restart caddy
+
+# Hand-over: while caddy.service holds :443 itself (an older PublishPort
+# Caddy) or the socket unit changed, Caddy has to stop before the socket can
+# (re)bind. The flush below restarts it on the socket.
+- name: Listen on :443 through caddy.socket
+  ansible.builtin.shell:
+    cmd: |
+      set -eo pipefail
+      systemctl --user daemon-reload
+      if [[ "$SOCKET_CHANGED" == True ]] || ! systemctl --user is-active --quiet caddy.socket; then
+        systemctl --user stop caddy.service
+        systemctl --user restart caddy.socket
+        echo CHANGED
+      fi
+      if ! systemctl --user is-enabled --quiet caddy.socket; then
+        systemctl --user enable caddy.socket
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ vault_uid }}"
+    SOCKET_CHANGED: "{{ caddy_socket_unit.changed }}"
+  become: true
+  become_user: "{{ vault_user }}"
+  register: caddy_socket_handover
+  changed_when: "'CHANGED' in caddy_socket_handover.stdout"
+  notify: restart caddy
 
 # Apply unit/config changes now (daemon-reload, then targeted restarts),
 # rather than at the end of the play after the backup role has run.

@@ -12,9 +12,19 @@
 #      IAM-gated `gcloud compute start-iap-tunnel <vm> 443` (runbook §6).
 #      Returning 404 (not 401/403) hides the route from public scanners.
 #      This fails closed: if client addresses ever stop being preserved
-#      (runbook §3.4), every request looks non-IAP and /admin is 404 for all.
+#      (runbook §3.4; caddy.socket is what preserves them), every request
+#      looks non-IAP and /admin is 404 for all.
 #      Vaultwarden's ADMIN_TOKEN is unset by default anyway, but this keeps
 #      the panel inaccessible even if a future change re-enables it.
+#
+#   3. Account registration is gated the same way, whether or not
+#      SIGNUPS_ALLOWED is on. A signups=true deploy (runbook §2.8) would
+#      otherwise open registration to the internet:
+#      - new hostnames show up in Certificate Transparency logs within
+#        minutes, and bots register on fresh instances to host files with
+#        Send;
+#      - with no SMTP, SIGNUPS_VERIFY can't stop them.
+#      The first account is created through an IAP tunnel instead.
 
 {
     # Required for Coraza to plug into the request pipeline before
@@ -23,6 +33,15 @@
 }
 
 {$VAULT_FQDN} {
+    # The listeners are systemd's caddy.socket (socket activation): fd 3 is
+    # 0.0.0.0:443 and fd 4 is [::]:443. They keep each client's real address,
+    # which rootless Podman's port forwarder replaced with its own; the
+    # remote_ip gates below and fail2ban depend on that. HTTP/1.1 and HTTP/2
+    # only: there's no UDP socket for HTTP/3.
+    bind fd/3 fd/4 {
+        protocols h1 h2
+    }
+
     tls {
         # Credentials come from the SA JSON at GOOGLE_APPLICATION_CREDENTIALS,
         # but the project does not: the module refuses to load without
@@ -68,6 +87,28 @@
     # /admin from anywhere else → 404 (hide route existence).
     @admin_elsewhere path /admin*
     handle @admin_elsewhere {
+        respond 404
+    }
+
+    # Registration through an IAP tunnel → reverse proxy normally. The
+    # substring match covers /identity/accounts/register (and its
+    # /send-verification-email and /finish steps) and the legacy
+    # /api/accounts/register, behind any prefix or doubled slash.
+    @register_from_iap {
+        path */accounts/register*
+        remote_ip {$ADMIN_CIDRS}
+    }
+    handle @register_from_iap {
+        reverse_proxy http://vaultwarden:8080 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
+
+    # Registration from anywhere else → 404, even while signups are open.
+    @register_elsewhere path */accounts/register*
+    handle @register_elsewhere {
         respond 404
     }
 

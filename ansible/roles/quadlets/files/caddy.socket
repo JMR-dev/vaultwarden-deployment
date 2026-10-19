@@ -1,0 +1,25 @@
+# Caddy's public listeners, owned by the rootless user's systemd and handed
+# to the Caddy container (socket activation; Podman passes them through).
+#
+# Why: published ports (PublishPort=) go through rootless Podman's port
+# forwarder, which replaces every client address with its own (10.89.0.x).
+# The IAP gates on /admin and registration (ADMIN_CIDRS), Vaultwarden's
+# X-Forwarded-For and fail2ban then see one address for the whole internet.
+# A socket systemd opened on the host keeps the real peer address, and Caddy
+# stays on its own bridge network (no Network=host).
+#
+# The order matters: these arrive as fd 3 and fd 4, as the Caddyfile's
+# `bind fd/3 fd/4` expects. Two sockets rather than one dual-stack [::]:443,
+# so IPv4 clients reach Caddy as plain IPv4 addresses, which IPv4 CIDRs
+# (ADMIN_CIDRS) and the nftables bans match. Binding 443 rootless relies on
+# net.ipv4.ip_unprivileged_port_start=443 (podman role), which covers IPv6 too.
+[Unit]
+Description=Caddy's :443 listeners (socket activation)
+
+[Socket]
+ListenStream=0.0.0.0:443
+ListenStream=[::]:443
+BindIPv6Only=ipv6-only
+
+[Install]
+WantedBy=sockets.target

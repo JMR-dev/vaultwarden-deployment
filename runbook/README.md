@@ -237,15 +237,44 @@ The run is `guard → image → infra → configure`:
 
 Expect ~10–15 minutes on a fresh VM.
 
-Then:
+Then create the test account **through an IAP tunnel**. Caddy answers 404 to
+registration from anywhere else, even while signups are open. The new
+hostname is in the public Certificate Transparency logs within minutes, and
+bots register on fresh instances to host files with Send.
 
-1. Open `https://disposable.vault.jasonrossmedia.com` and create the test
-   account.
-2. Re-run the workflow with `signups=false`.
-3. Confirm a second registration attempt is refused.
+1. Open the tunnel. Your Google identity is the gate: it needs
+   `iap.tunnelResourceAccessor`.
+   ```sh
+   gcloud compute start-iap-tunnel vault-disposable 443 \
+     --local-host-port=localhost:8443 --zone us-east1-b
+   ```
+2. Point the hostname at the tunnel. Temporarily add this line to
+   `/etc/hosts`:
+   `127.0.0.1 disposable.vault.jasonrossmedia.com`. The certificate then
+   matches, and Caddy sees an IAP source address.
+3. Browse to `https://disposable.vault.jasonrossmedia.com:8443/#/signup` and
+   create the account.
+4. Remove the hosts line and stop the tunnel.
+5. Confirm a stranger can't register:
+   `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://disposable.vault.jasonrossmedia.com/identity/accounts/register`
+   should print `404`.
+
+The window closes itself `vaultwarden_signups_window_minutes` (30) after the
+deploy. `vaultwarden-signups-close.timer` turns `SIGNUPS_ALLOWED` off, and the
+timer is persistent, so it survives a reboot. Root then gets a mail listing
+**every account in the vault**: check that each one is yours. Re-running the
+workflow with `signups=false` closes the window early, as any later deploy
+does. To close it by hand: `sudo /usr/local/sbin/vaultwarden-signups-close`.
 
 `/admin` is disabled by default, so the `signups` deploy is the only way to
 create the first account on a fresh stack.
+
+**An account that is not yours** (it shouldn't happen behind the IAP gate):
+1. Set `admin_token_argon2` in `vaultwarden-vaultwarden`.
+2. Redeploy with `--tags secrets,quadlets`.
+3. Delete the account in `/admin` through the same IAP tunnel (`/admin` is
+   IAP-only too).
+4. Clear the token and redeploy.
 
 ### 2.9 The disposable cycle (repeatable)
 
@@ -320,11 +349,11 @@ should load the web vault.
 
 If `-4` works and `-6` doesn't (the AAAA record is published, so IPv6
 clients will try it first), check where the host listens:
-`sudo ss -ltnp 'sport = :443'`. With no `[::]:443` listener, rootless
-port forwarding is binding IPv4 only. Fix it in `quadlets/caddy.container.j2`
-by publishing both families explicitly (`PublishPort=0.0.0.0:443:443` and
-`PublishPort=[::]:443:443`), or, as a stopgap, drop the AAAA record in
-`platform/main.go`. If `[::]:443` is listening but still unreachable, check the
+`sudo ss -ltnp 'sport = :443'`. You should see both `0.0.0.0:443` and
+`[::]:443`, held by the vaultwarden user's systemd (`caddy.socket`). If
+either is missing, run `systemctl --user -M vaultwarden@ status caddy.socket`.
+As a stopgap, drop the AAAA record in `platform/main.go`. If `[::]:443` is
+listening but still unreachable, check the
 `vaultwarden-allow-https-v6` VPC rule and that the VM got its IPv6
 (`ip -6 addr show scope global`; DHCPv6 is admitted by nftables).
 
@@ -363,17 +392,26 @@ sudo tail -f /data/vaultwarden.log
 # The log line must carry your public IP, not a 10.x / 169.254.x address.
 ```
 
-If the log shows an internal address, rootless podman's bridge port-forward
-is hiding client IPs. Two consequences: fail2ban can't ban anyone, and
-`/admin` stays 404 even through the IAP tunnel (it fails closed). Stop and
-fix before continuing. The fix:
+Caddy's access log must show the same address:
+`sudo tail -n 3 /var/lib/vaultwarden/caddy/logs/access.log | jq -r .request.remote_ip`.
 
-- Run Caddy with `Network=host` (`quadlets/caddy.container.j2`; drop its
-  `Sysctl=` line, which podman rejects under host networking).
-- Publish Vaultwarden on `PublishPort=127.0.0.1:8080:8080` and point the
-  Caddyfile `reverse_proxy` at `127.0.0.1:8080`.
-- Lower the host sysctl to `net.ipv4.ip_unprivileged_port_start=80` (podman
-  role), so rootless Caddy can bind :80 for its redirects.
+If either shows an internal address (`10.89.0.x`), Caddy isn't getting its
+listeners from `caddy.socket`, and rootless Podman's port forwarder is
+hiding client IPs. A `PublishPort=` crept back into
+`quadlets/caddy.container.j2`, or the socket isn't active. Three
+consequences:
+- fail2ban can't ban anyone;
+- `/admin` stays 404 even through the IAP tunnel (it fails closed);
+- so does account registration, so nobody can create an account.
+
+Stop and fix before continuing:
+`systemctl --user -M vaultwarden@ status caddy.socket caddy.service`.
+
+Don't "fix" it with `Network=host` for Caddy. That would put the
+internet-facing proxy in the host's network namespace, with every
+host-local service in reach. Socket activation preserves addresses
+without that tradeoff: a socket systemd opened on the host keeps the real
+peer address, and Caddy stays on its own bridge network.
 
 ### 3.5 fail2ban bans actually drop traffic, and survive a ruleset load
 
@@ -540,8 +578,14 @@ instance refuses API deletion). Prerequisites from §2 that are per stack:
    `stack=production`, `signups=true`. The image job promotes the
    already-scanned `caddy:<sha>` (if disposable built it) by moving the
    `caddy:production` tag.
-2. Create your real account at `https://vault.jasonrossmedia.com`.
-3. ⚠ Re-run with `signups=false`. Confirm registration is refused.
+2. Create your real account through the IAP tunnel, as in §2.8:
+   `gcloud compute start-iap-tunnel vault-production 443 --local-host-port=localhost:8443 --zone us-east1-b`,
+   then add `127.0.0.1 vault.jasonrossmedia.com` to `/etc/hosts` and browse
+   `https://vault.jasonrossmedia.com:8443/#/signup`. Then remove the hosts
+   line.
+3. ⚠ Re-run with `signups=false`, or let the 30-minute timer close it.
+   Confirm registration is refused, and that the account-list mail shows
+   only your account.
 4. Run the production-safe subset of §3: 3.2, 3.3, 3.4, 3.6 (backup run;
    the restore drill uses production's repo), 3.7 (email + Healthchecks),
    3.11 deployer listing. Skip the destructive ones (3.1, the 3.9 umount).

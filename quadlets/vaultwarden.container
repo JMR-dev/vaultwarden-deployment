@@ -13,10 +13,16 @@ ContainerName=vaultwarden
 AutoUpdate=registry
 Network=vaultwarden.network
 
-# /data is the GCE data disk (mounted by the Ansible base role). :Z relabels
-# under SELinux private context — required for rootless container_t to
-# read/write.
-Volume=/data:/data:Z
+# /data is the GCE data disk, mounted by the Ansible base role. It's private
+# to this container through SELinux MCS:
+# - The base role labels it container_file_t at this fixed level, so other
+#   containers can't open it, Caddy included (its level is disjoint).
+# - No `:Z`: that would relabel the whole filesystem at every start, and it
+#   fails on the root-only lost+found.
+# - Keep this level equal to vaultwarden_selinux_level in
+#   ansible/group_vars/all.yml. The quadlets role asserts it.
+SecurityLabelLevel=s0:c118,c492
+Volume=/data:/data
 
 # Per-stack values (DOMAIN, SIGNUPS_ALLOWED) come from the Ansible-rendered
 # env file. SIGNUPS_ALLOWED is true for exactly one deploy -- the one that
@@ -31,7 +37,9 @@ EnvironmentFile=%h/vaultwarden.env
 Environment=ROCKET_PORT=8080
 Environment=ROCKET_ADDRESS=0.0.0.0
 Environment=DATA_FOLDER=/data
-Environment=DATABASE_URL=data/db.sqlite3
+# An explicit scheme: since 1.37, Vaultwarden refuses a scheme-less URL when
+# the database doesn't exist yet, so a fresh vault never started (exit 12).
+Environment=DATABASE_URL=sqlite:///data/db.sqlite3
 Environment=SIGNUPS_VERIFY=true
 Environment=INVITATIONS_ALLOWED=false
 Environment=WEB_VAULT_ENABLED=true

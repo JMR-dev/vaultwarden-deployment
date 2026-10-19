@@ -35,6 +35,23 @@ vault_data_dir: /data
 # device name is set in pulumi/main.go (DataDiskDeviceName).
 vault_data_device: /dev/disk/by-id/google-vault-data
 
+# SELinux MCS levels, fixed and DISJOINT, so the vault's files on /data are
+# private to the Vaultwarden container. Neither the internet-facing Caddy nor
+# any other container can open them, even after a breakout into its own
+# context. Both containers run as the host user that owns /data
+# (Vaultwarden's root, and Caddy's nonroot via keep-id), so file permissions
+# alone wouldn't stop that.
+# - Why not `:Z`: it gives the same privacy but relabels the whole volume at
+#   every start, and on the disk's root-only lost+found that fails.
+# - Instead, the base role labels /data container_file_t at
+#   vaultwarden_selinux_level (persistent fcontext + `restorecon -F`).
+# - The quadlets run at these levels: SecurityLabelLevel= in the static
+#   quadlets/vaultwarden.container (asserted equal by the quadlets role) and
+#   in caddy.container.j2.
+# Changing one means restorecon -F /data, then restarting both containers.
+vaultwarden_selinux_level: "s0:c118,c492"
+caddy_selinux_level: "s0:c219,c731"
+
 # Google Cloud Secret Manager -- where Ansible pulls secrets from, on the
 # controller (CI runner via the deployer key, or the operator's ADC). The VM
 # itself has no Google identity.
@@ -45,15 +62,22 @@ secret_prefix: vaultwarden-
 stack_secret_prefix: "{{ secret_prefix }}{{ stack }}-"
 
 # IAP TCP forwarding's fixed source range: the only path to SSH, and -- through
-# a tunnel to :443 -- the only source Caddy lets reach /admin. Must match
-# IAPRange in platform/main.go.
+# a tunnel to :443 -- the only source Caddy lets reach /admin and account
+# registration. Must match IAPRange in platform/main.go.
 iap_range: 35.235.240.0/20
 
 # Open account registration. Off except for the one deploy that creates the
-# operator's account on a fresh stack (deploy.yml `signups` input), after which
-# a normal redeploy locks it again. /admin is disabled by default, so this is
-# the only way to create the first account.
+# operator's account on a fresh stack (deploy.yml `signups` input). /admin is
+# disabled by default, so this is the only way to create the first account.
+# Three safeguards bound that window:
+# - Caddy passes registration only from iap_range, so the account is created
+#   through an IAP tunnel (runbook §2.8) and strangers get 404.
+# - The window closes itself vaultwarden_signups_window_minutes after the
+#   deploy (vaultwarden-signups-close.timer, Persistent, so a reboot can't
+#   skip it), even if no signups=false redeploy follows.
+# - Closing it mails root the list of every account in the vault.
 vaultwarden_signups_allowed: false
+vaultwarden_signups_window_minutes: 30
 
 # dnf-automatic maintenance window.
 dnf_reboot_window: "04:00"

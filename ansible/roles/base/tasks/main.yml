@@ -54,6 +54,28 @@
     opts: defaults,nofail,discard
     state: mounted
 
+# Label /data private to the Vaultwarden container: container_file_t at
+# vaultwarden_selinux_level (group_vars explains the levels). This replaces a
+# `:Z` volume, which relabels the whole tree at every start and fails on the
+# filesystem root's root-only lost+found.
+#
+# `-F` matters. Plain restorecon resets only the type and leaves the MCS
+# level, so files would keep s0 (readable by every container) and nothing
+# would look wrong. Files the container creates get its level. Files root
+# writes (a restore) get s0 until the next run's restorecon -F.
+- name: Persistent private container label for /data
+  community.general.sefcontext:
+    target: "{{ vault_data_dir }}(/.*)?"
+    setype: container_file_t
+    selevel: "{{ vaultwarden_selinux_level }}"
+    state: present
+
+- name: Apply the /data label, MCS level included
+  ansible.builtin.command:
+    cmd: "restorecon -R -F -v {{ vault_data_dir }}"
+  register: data_restorecon
+  changed_when: data_restorecon.stdout | length > 0
+
 # GCE images ship with no swap, and an e2-small (2 GB) running Caddy+CRS,
 # Vaultwarden and dnf can be OOM-killed mid-request on a burst. Ballast, not
 # working memory -- hence swappiness 10; steady swapping means a bigger

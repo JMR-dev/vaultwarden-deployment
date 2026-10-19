@@ -85,7 +85,7 @@ unusable":
    podman run --rm -d --name vw-restore-test \
      -v "$drill/restore/data:/data:Z" \
      -e DATA_FOLDER=/data \
-     -e DATABASE_URL=data/db-backup.sqlite3 \
+     -e DATABASE_URL=sqlite:///data/db-backup.sqlite3 \
      -e SIGNUPS_ALLOWED=false \
      -e WEB_VAULT_ENABLED=true \
      -p 127.0.0.1:8081:8080 \
@@ -163,7 +163,9 @@ sudo rsync -a --delete --exclude lost+found /var/tmp/restore/data/ /data/   # in
 sudo -u vaultwarden cp /data/db-backup.sqlite3 /data/db.sqlite3
 sudo rm -f /data/db.sqlite3-wal /data/db.sqlite3-shm /data/db.sqlite3-journal
 sudo rm -rf /var/tmp/restore
-# No relabel needed: the quadlet's :Z mount relabels /data on start.
+# Back to the vault's private SELinux label. root's writes above are at s0,
+# readable by any container; -F resets the MCS level too (base role).
+sudo restorecon -R -F /data
 sudo systemctl --user -M vaultwarden@ start vaultwarden.service
 ```
 

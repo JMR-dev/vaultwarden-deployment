@@ -26,7 +26,7 @@ on:
         type: boolean
         default: false
       signups:
-        description: Open account signups for this deploy only (first account on a fresh stack); the next deploy closes them
+        description: Open account signups to create the first account on a fresh stack. Registration works only through an IAP tunnel (runbook §2.8) and closes itself after 30 min; any later deploy closes it too
         type: boolean
         default: false
 

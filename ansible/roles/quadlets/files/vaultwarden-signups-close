@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Close the account-signup window a signups=true deploy opened, then mail
+# root every account in the vault, so one that isn't the operator's stands
+# out.
+#
+#   vaultwarden-signups-close
+#
+# Run by vaultwarden-signups-close.timer at the time Ansible set when it
+# armed the window (vaultwarden_signups_window_minutes after the deploy). The
+# timer is Persistent, so a reboot in between closes it at boot. Safe to run
+# by hand at any time; on an already-closed window it only mails the list.
+#
+# Caddy only lets registration through from the IAP range anyway (Caddyfile
+# note 3). This is the second layer: the window can't stay open because a
+# follow-up signups=false deploy never happened.
+
+set -euo pipefail
+
+env_file=/var/lib/vaultwarden/vaultwarden.env
+db=/data/db.sqlite3
+host="$(uname -n)"
+
+if grep -qx 'SIGNUPS_ALLOWED=true' "$env_file"; then
+  # Rewrite in place: same inode, so the owner, mode and SELinux label stay.
+  content="$(sed 's/^SIGNUPS_ALLOWED=true$/SIGNUPS_ALLOWED=false/' "$env_file")"
+  printf '%s\n' "$content" >"$env_file"
+  systemctl --user -M vaultwarden@ restart vaultwarden.service
+  status="Closed it just now; Vaultwarden restarted with SIGNUPS_ALLOWED=false."
+else
+  status="It was already closed (SIGNUPS_ALLOWED is not true)."
+fi
+
+if [[ -f "$db" ]]; then
+  accounts="$(sqlite3 -readonly "$db" "SELECT created_at || '  ' || email FROM users ORDER BY created_at;")"
+else
+  accounts=""
+fi
+count="$(grep -c . <<<"$accounts" || true)"
+
+{
+  printf 'To: root\n'
+  printf 'From: vaultwarden@%s\n' "$host"
+  printf 'Subject: [%s] Vaultwarden signup window closed: %s account(s)\n' "$host" "$count"
+  printf '\n%s\n\n' "$status"
+  printf 'Every account in the vault (created_at, email):\n\n%s\n\n' "${accounts:-  (none)}"
+  printf 'If one is not yours, remove it through /admin over an IAP tunnel\n'
+  printf '(runbook §2.8, "An account that is not yours").\n'
+} | /usr/sbin/sendmail -t

@@ -1,0 +1,9 @@
+[Unit]
+Description=Close the Vaultwarden signup window and mail root the account list
+Wants=network-online.target
+After=network-online.target
+OnFailure=status-email-root@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vaultwarden-signups-close

@@ -2,6 +2,10 @@
 Description=Caddy reverse proxy (custom build with googleclouddns + Coraza)
 Wants=network-online.target vaultwarden.service
 After=network-online.target vaultwarden.service
+# :443 comes from caddy.socket (socket activation; see that unit for why).
+# Without it, `bind fd/3 fd/4` has nothing to bind.
+Requires=caddy.socket
+After=caddy.socket
 # Wants= (not Requires=) on vaultwarden.service: a Vaultwarden restart
 # returns a brief 502 from reverse_proxy rather than tearing down Caddy
 # (which would drop TLS termination at 443). Client cache covers the gap.
@@ -23,9 +27,9 @@ ContainerName=caddy
 AutoUpdate=registry
 Network=vaultwarden.network
 
-# 443 on the host. The sysctl ip_unprivileged_port_start=443 (set by the
-# podman role) lets rootless caddy bind without CAP_NET_BIND_SERVICE.
-PublishPort=443:443
+# No PublishPort=. 443 on the host is caddy.socket, passed in as fd 3 (IPv4)
+# and fd 4 (IPv6). A published port would hide every client's address
+# behind rootless Podman's port forwarder.
 
 # The distroless image runs Caddy as nonroot (65532). keep-id maps the host
 # vault_user onto that uid, so the bind-mounted data/log dirs (owned by
@@ -40,8 +44,14 @@ Sysctl=net.ipv4.ip_unprivileged_port_start=0
 # wiped on every auto-update recreate. Keep certs on the /data mount instead.
 Environment=XDG_DATA_HOME=/data
 
+# A fixed MCS level, disjoint from Vaultwarden's (group_vars
+# caddy_selinux_level). keep-id runs Caddy as the host user that owns /data,
+# so file permissions don't keep it out of the vault's files; SELinux does,
+# and a fixed level rules out Podman ever randomly picking Vaultwarden's.
+SecurityLabelLevel={{ caddy_selinux_level }}
+
 # Caddyfile bind-mount, plus Caddy's data dir (certs, OCSP staples) and
-# log dir (access log + Coraza audit). All :Z under SELinux.
+# log dir (access log + Coraza audit). All :Z, so labelled at the level above.
 Volume=%h/caddy/Caddyfile:/etc/caddy/Caddyfile:Z,ro
 Volume=%h/caddy/data:/data:Z
 Volume=%h/caddy/logs:/var/log/caddy:Z
