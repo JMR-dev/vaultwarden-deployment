@@ -809,7 +809,7 @@ change `Image=` in `quadlets/vaultwarden.container` to a version tag and drop
 ```sh
 IMAGE=us-east1-docker.pkg.dev/vaultwarden-497422/vaultwarden/caddy
 gcloud artifacts docker tags list "$IMAGE"            # find the last good <sha>
-gcloud artifacts docker tags add "$IMAGE:<good-sha>" "$IMAGE:<stack>"
+scripts/retag-image.sh "$IMAGE:<good-sha>" <stack>    # same move deploy.yml makes
 gcloud compute ssh vault-<stack> --zone us-east1-b --tunnel-through-iap
 sudo -u vaultwarden XDG_RUNTIME_DIR=/run/user/1100 podman auto-update
 ```

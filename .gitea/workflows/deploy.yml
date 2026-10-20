@@ -86,7 +86,10 @@ jobs:
             docker push "${IMAGE}:${sha}"
           fi
           # The floating per-stack tag podman auto-update watches on the host.
-          gcloud artifacts docker tags add "${IMAGE}:${sha}" "${IMAGE}:${STACK}" --quiet
+          # A manifest copy, not `gcloud artifacts docker tags add`: that moves
+          # an existing tag by deleting it first (artifactregistry.tags.delete,
+          # outside the deployer's writer role).
+          scripts/retag-image.sh "${IMAGE}:${sha}" "${STACK}"
       - name: Remove deployer key
         if: always()
         run: rm -f "${RUNNER_TEMP}/gcp-deployer.json"; rm -rf "${RUNNER_TEMP}/gcloud-config" "${HOME}/.docker/config.json"
