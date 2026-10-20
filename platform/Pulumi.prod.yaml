@@ -22,7 +22,7 @@ config:
   vaultwarden-platform:stacks:
     - name: disposable
       fqdn: disposable.vault.jasonrossmedia.com.
-      active: true
+      active: false
     - name: production
       fqdn: vault.jasonrossmedia.com.
       active: true
