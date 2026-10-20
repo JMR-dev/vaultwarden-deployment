@@ -6,7 +6,10 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -290,15 +293,99 @@ func TestMailDomainRecords(t *testing.T) {
 	}
 }
 
+// fakeActive stands in for the Parameter Manager lookup for one test: values
+// maps a parameter name to its boolean, and a missing name is a lookup error.
+func fakeActive(t *testing.T, values map[string]bool) {
+	t.Helper()
+	orig := stackActive
+	stackActive = func(_ context.Context, project, parameter string) (bool, error) {
+		if project != "demo" {
+			return false, fmt.Errorf("unexpected project %q", project)
+		}
+		v, ok := values[parameter]
+		if !ok {
+			return false, errors.New("parameter " + parameter + " not found")
+		}
+		return v, nil
+	}
+	t.Cleanup(func() { stackActive = orig })
+}
+
+const paramStacksJSON = `[
+  {"name":"disposable","fqdn":"disposable.vault.example.org.","activeParameter":"vaultwarden-disposable-active"},
+  {"name":"production","fqdn":"vault.example.org.","active":true}
+]`
+
+func TestActiveParameterSwitchesTheStack(t *testing.T) {
+	for _, active := range []bool{true, false} {
+		t.Run(fmt.Sprint(active), func(t *testing.T) {
+			fakeActive(t, map[string]bool{"vaultwarden-disposable-active": active})
+			cfg := baseConfig()
+			cfg["vaultwarden-platform:stacks"] = paramStacksJSON
+			m := mustRun(t, cfg)
+
+			addrs, grants := 0, 0
+			for _, r := range m.byType("gcp:compute/address:Address") {
+				if strings.Contains(r.name, "disposable") {
+					addrs++
+				}
+			}
+			for _, r := range m.byType("gcp:secretmanager/secretIamMember:SecretIamMember") {
+				if strings.Contains(str(r, "secretId"), "disposable") {
+					grants++
+				}
+			}
+			want := map[bool]int{true: 2, false: 0}[active]
+			if addrs != want || grants != want {
+				t.Errorf("active=%v: want %d disposable addresses and grants, got %d and %d", active, want, addrs, grants)
+			}
+			if n := len(m.byType("cloudflare:index/r2Bucket:R2Bucket")); n != 2 {
+				t.Errorf("want both R2 buckets whatever the parameter says, got %d", n)
+			}
+		})
+	}
+}
+
+// An unreadable parameter fails the run. Treating it as "inactive" would let a
+// typo or an API error release the stack's static IPs and DNS.
+func TestUnreadableActiveParameterFailsTheRun(t *testing.T) {
+	fakeActive(t, map[string]bool{}) // every lookup errors
+	cfg := baseConfig()
+	cfg["vaultwarden-platform:stacks"] = paramStacksJSON
+	m, err := run(t, cfg)
+	if err == nil || !strings.Contains(err.Error(), "vaultwarden-disposable-active") {
+		t.Fatalf("want an error naming the parameter, got %v", err)
+	}
+	if n := len(m.byType("gcp:compute/address:Address")); n != 0 {
+		t.Errorf("the failed run still declared %d addresses", n)
+	}
+}
+
+func TestParseActiveAcceptsOnlyJSONBooleans(t *testing.T) {
+	for payload, want := range map[string]bool{"true": true, "false": false, "true\n": true, "false \r\n": false} {
+		if got, err := ParseActive(payload); err != nil || got != want {
+			t.Errorf("ParseActive(%q) = %v, %v; want %v", payload, got, err, want)
+		}
+	}
+	for _, payload := range []string{"", "1", "0", `"true"`, "True", "TRUE", "yes", " true", "true false", "null", "{}"} {
+		if _, err := ParseActive(payload); err == nil {
+			t.Errorf("ParseActive(%q) accepted a non-boolean", payload)
+		}
+	}
+}
+
 func TestValidationRejectsBadConfig(t *testing.T) {
 	cases := map[string]map[string]string{
-		"gs:// prefix":      {"vaultwarden-platform:appStateBucket": "gs://demo-pulumi-state"},
-		"no trailing dot":   {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.org","active":true}]`},
-		"fqdn outside zone": {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.com.","active":true}]`},
-		"mail outside zone": {"vaultwarden-platform:mailDomain": "example.org"},
-		"mail with dot":     {"vaultwarden-platform:mailDomain": "vault.example.org."},
-		"bad stack name":    {"vaultwarden-platform:stacks": `[{"name":"Prod-1","fqdn":"vault.example.org.","active":true}]`},
-		"duplicate stack":   {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.org.","active":true},{"name":"prod","fqdn":"x.vault.example.org.","active":true}]`},
+		"active and activeParameter": {"vaultwarden-platform:stacks": `[{"name":"disposable","fqdn":"d.vault.example.org.","active":true,"activeParameter":"vaultwarden-disposable-active"}]`},
+		"neither active setting":     {"vaultwarden-platform:stacks": `[{"name":"disposable","fqdn":"d.vault.example.org."}]`},
+		"foreign activeParameter":    {"vaultwarden-platform:stacks": `[{"name":"disposable","fqdn":"d.vault.example.org.","activeParameter":"vaultwarden-production-active"}]`},
+		"gs:// prefix":               {"vaultwarden-platform:appStateBucket": "gs://demo-pulumi-state"},
+		"no trailing dot":            {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.org","active":true}]`},
+		"fqdn outside zone":          {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.com.","active":true}]`},
+		"mail outside zone":          {"vaultwarden-platform:mailDomain": "example.org"},
+		"mail with dot":              {"vaultwarden-platform:mailDomain": "vault.example.org."},
+		"bad stack name":             {"vaultwarden-platform:stacks": `[{"name":"Prod-1","fqdn":"vault.example.org.","active":true}]`},
+		"duplicate stack":            {"vaultwarden-platform:stacks": `[{"name":"prod","fqdn":"vault.example.org.","active":true},{"name":"prod","fqdn":"x.vault.example.org.","active":true}]`},
 	}
 	for name, override := range cases {
 		t.Run(name, func(t *testing.T) {

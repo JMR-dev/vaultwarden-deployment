@@ -23,9 +23,12 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"gitea.jasonmross.dev/JMR-dev/pulumi-resend/sdk/go/resend"
 	"github.com/pulumi/pulumi-cloudflare/sdk/v6/go/cloudflare"
@@ -39,6 +42,7 @@ import (
 	"github.com/pulumi/pulumi-gcp/sdk/v9/go/gcp/storage"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
+	"google.golang.org/api/parametermanager/v1"
 )
 
 const (
@@ -87,10 +91,25 @@ func StackSecrets(stack string) []string {
 func R2BucketName(stack string) string        { return "vaultwarden-backups-" + stack }
 func AddressName(stack, family string) string { return "vault-" + stack + "-" + family }
 
+// ActiveParameterName is the Parameter Manager parameter (location global)
+// that switches a stack on and off at runtime. scripts/bootstrap-gcp.sh
+// creates it, scripts/stack-active.sh writes it, and a stack configured with
+// activeParameter reads it.
+func ActiveParameterName(stack string) string { return "vaultwarden-" + stack + "-active" }
+
 type StackConfig struct {
-	Name   string `json:"name"`
-	FQDN   string `json:"fqdn"`
-	Active bool   `json:"active"`
+	Name string `json:"name"`
+	FQDN string `json:"fqdn"`
+	// Exactly one of Active and ActiveParameter is set.
+	// - Active is fixed here, in code. Production uses it: turning production
+	//   off releases its static IPs and DNS, so that stays a reviewed change.
+	// - ActiveParameter names the parameter (ActiveParameterName) whose newest
+	//   enabled version holds the JSON boolean, so the stack goes on and off
+	//   without a code change. Disposable uses it (runbook §2.9).
+	Active          *bool  `json:"active,omitempty"`
+	ActiveParameter string `json:"activeParameter,omitempty"`
+	// IsActive is the resolved state: Active, or the parameter's value.
+	IsActive bool `json:"-"`
 }
 
 type Config struct {
@@ -157,8 +176,111 @@ func (c *Config) validate() error {
 		if !strings.HasSuffix(s.FQDN, ".") {
 			return fmt.Errorf("stack %q: fqdn %q needs a trailing dot", s.Name, s.FQDN)
 		}
+		switch {
+		case s.Active != nil && s.ActiveParameter != "":
+			return fmt.Errorf("stack %q: set active or activeParameter, not both", s.Name)
+		case s.Active == nil && s.ActiveParameter == "":
+			return fmt.Errorf("stack %q: set active (true/false) or activeParameter", s.Name)
+		case s.ActiveParameter != "" && s.ActiveParameter != ActiveParameterName(s.Name):
+			return fmt.Errorf("stack %q: activeParameter must be %q, the name scripts/stack-active.sh writes",
+				s.Name, ActiveParameterName(s.Name))
+		}
 	}
 	return nil
+}
+
+// stackActive reads a runtime-switched stack's state. It's a variable so the
+// mock-runtime tests can replace it; the real one calls Parameter Manager.
+var stackActive = parameterManagerActive
+
+// resolveActive fills in every stack's IsActive. An unreadable parameter is an
+// error, never "inactive": a typo or an API hiccup must fail the preview, not
+// release a stack's static IPs and DNS on the next up.
+func resolveActive(ctx context.Context, cfg *Config) error {
+	for i := range cfg.Stacks {
+		s := &cfg.Stacks[i]
+		if s.Active != nil {
+			s.IsActive = *s.Active
+			continue
+		}
+		active, err := stackActive(ctx, cfg.Project, s.ActiveParameter)
+		if err != nil {
+			return fmt.Errorf("stack %q: %w", s.Name, err)
+		}
+		s.IsActive = active
+	}
+	return nil
+}
+
+// parameterManagerActive returns the boolean held by the newest enabled
+// version of a global Parameter Manager parameter. The service has no
+// "latest" alias, so this lists the versions and takes the newest by
+// createTime that isn't disabled. Disabling a version rolls back to the one
+// before it.
+func parameterManagerActive(ctx context.Context, project, parameter string) (bool, error) {
+	svc, err := parametermanager.NewService(ctx)
+	if err != nil {
+		return false, fmt.Errorf("parameter %s: %w", parameter, err)
+	}
+	parent := fmt.Sprintf("projects/%s/locations/global/parameters/%s", project, parameter)
+	var newest *parametermanager.ParameterVersion
+	var newestAt time.Time
+	err = svc.Projects.Locations.Parameters.Versions.List(parent).Pages(ctx, func(page *parametermanager.ListParameterVersionsResponse) error {
+		for _, v := range page.ParameterVersions {
+			if v.Disabled {
+				continue
+			}
+			at, err := time.Parse(time.RFC3339Nano, v.CreateTime)
+			if err != nil {
+				return fmt.Errorf("version %s: createTime %q: %w", v.Name, v.CreateTime, err)
+			}
+			if newest == nil || at.After(newestAt) {
+				newest, newestAt = v, at
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("parameter %s: list versions: %w", parameter, err)
+	}
+	if newest == nil {
+		return false, fmt.Errorf("parameter %s has no enabled version; set one with scripts/stack-active.sh", parameter)
+	}
+	v, err := svc.Projects.Locations.Parameters.Versions.Get(newest.Name).View("FULL").Do()
+	if err != nil {
+		return false, fmt.Errorf("parameter %s: get %s: %w", parameter, newest.Name, err)
+	}
+	if v.Payload == nil {
+		return false, fmt.Errorf("parameter %s: version %s has no payload", parameter, newest.Name)
+	}
+	raw, err := base64.StdEncoding.DecodeString(v.Payload.Data)
+	if err != nil {
+		return false, fmt.Errorf("parameter %s: version %s: payload isn't base64: %w", parameter, newest.Name, err)
+	}
+	active, err := ParseActive(string(raw))
+	if err != nil {
+		return false, fmt.Errorf("parameter %s, version %s: %w", parameter, newest.Name, err)
+	}
+	return active, nil
+}
+
+// ParseActive accepts exactly the JSON booleans `true` and `false`, allowing
+// only trailing whitespace (a file payload ends in a newline). Parameter
+// Manager's JSON format would also accept "true" (a string) or 1, which mean
+// nothing here; this is where "only ever a bool" is enforced on read, and
+// scripts/stack-active.sh enforces it on write.
+func ParseActive(payload string) (bool, error) {
+	switch strings.TrimRight(payload, " \t\r\n") {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	shown := payload
+	if len(shown) > 40 {
+		shown = shown[:40] + "…"
+	}
+	return false, fmt.Errorf("payload %q is not the JSON boolean true or false", shown)
 }
 
 func main() { pulumi.Run(program) }
@@ -166,6 +288,9 @@ func main() { pulumi.Run(program) }
 func program(ctx *pulumi.Context) error {
 	cfg, err := loadConfig(ctx)
 	if err != nil {
+		return err
+	}
+	if err := resolveActive(ctx.Context(), cfg); err != nil {
 		return err
 	}
 
@@ -506,11 +631,11 @@ func newStack(ctx *pulumi.Context, cfg *Config, s StackConfig, zoneName string, 
 		return nil, err
 	}
 	out := pulumi.Map{
-		"active":   pulumi.Bool(s.Active),
+		"active":   pulumi.Bool(s.IsActive),
 		"fqdn":     pulumi.String(s.FQDN),
 		"r2Bucket": bucket.Name,
 	}
-	if !s.Active {
+	if !s.IsActive {
 		return out, nil
 	}
 

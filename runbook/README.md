@@ -284,10 +284,11 @@ its R2 bucket. The first cycle is §2.8 plus §3; later ones are just this.
 
 **Start**
 
-1. ⚠ In `platform/Pulumi.prod.yaml`, set `active: true` for disposable, then
-   run `pulumi up` in `platform/` (credentials as in §2.3) and commit. This
-   reserves its static IPs, writes its A/AAAA records and grants its
-   secrets.
+1. ⚠ `scripts/stack-active.sh disposable true`, then `pulumi up` in
+   `platform/` (credentials as in §2.3). This reserves its static IPs, writes
+   its A/AAAA records and grants its secrets. It's a Parameter Manager value,
+   so there's nothing to commit (`secrets/README.md`, "stack on/off
+   parameters").
 2. ⚠ Dispatch deploy: `stack=disposable`, from the branch under test, with
    `signups=true` on a fresh VM, then once more with `signups=false`.
 3. Test. Its Healthchecks checks resume on their first ping.
@@ -305,10 +306,10 @@ its R2 bucket. The first cycle is §2.8 plus §3; later ones are just this.
 2. Pause its checks so they don't alert while it's gone:
    `scripts/healthchecks-pause.sh disposable` (prompts for the
    Healthchecks API key).
-3. ⚠ Set `active: false` for disposable, `pulumi up` in `platform/`, and
-   commit. That releases its static IPs (idle ones bill), drops its DNS
-   records and secret grants. The R2 bucket stays (protected), and so does
-   its restic repository, which the next cycle's backups reuse.
+3. ⚠ `scripts/stack-active.sh disposable false`, then `pulumi up` in
+   `platform/`. That releases its static IPs (idle ones bill), drops its DNS
+   records and secret grants. The R2 bucket stays (protected), and so does its
+   restic repository, which the next cycle's backups reuse.
 
 Every cycle issues a new Let's Encrypt certificate for
 `disposable.vault.jasonrossmedia.com`, at most five a week (§3.1).

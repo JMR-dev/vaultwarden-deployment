@@ -143,6 +143,31 @@ two owner-only ones), push images, and use IAP SSH. It can't grant IAM, create
 SAs, change DNS, or read platform state. Create and rotate it with
 `scripts/rotate-deployer-key.sh` (every 90 days).
 
+## Not in Secret Manager: stack on/off parameters
+
+A stack configured with `activeParameter` in `platform/Pulumi.prod.yaml`
+(disposable) is switched on and off by a **Parameter Manager** parameter,
+not by a code change. The parameter is `vaultwarden-<stack>-active` (location
+`global`, format JSON), and `platform/` reads its newest enabled version at
+every run. It isn't secret. `scripts/bootstrap-gcp.sh` creates it with a first
+version of `false`.
+
+```sh
+scripts/stack-active.sh disposable            # show the current value
+scripts/stack-active.sh disposable true       # then `pulumi up` in platform/
+```
+
+The value is only ever the JSON boolean `true` or `false`:
+- the script refuses anything else;
+- `platform/` fails the preview on anything else, or when it can't read the
+  parameter, and never guesses `false`.
+
+Every flip adds a version. Undo one by disabling it:
+`gcloud parametermanager parameters versions update <version> --parameter=vaultwarden-<stack>-active --location=global --disabled`.
+
+Production's `active: true` stays in code. Turning it off releases its static
+IPs and DNS, so that has to be a reviewed change.
+
 ## Retired
 
 `vaultwarden-wireguard` and `vaultwarden-ssh-private-key` belonged to the

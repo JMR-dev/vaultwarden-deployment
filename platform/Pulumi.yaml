@@ -26,6 +26,11 @@ config:
     description: Resend sending domain for the hosts' alert mail, no trailing dot; must be inside dnsZone, which gets its records
   vaultwarden-platform:stacks:
     description: |
-      App stacks, as a list of {name, fqdn, active}. An inactive stack keeps its
-      R2 bucket (protected) but releases its static addresses, DNS records and
-      secret grants.
+      App stacks, as a list of {name, fqdn} plus exactly one of:
+      - active: true|false, fixed in code;
+      - activeParameter: vaultwarden-<name>-active, a Parameter Manager
+        parameter whose newest enabled version is the JSON boolean
+        (scripts/stack-active.sh writes it).
+      An unreadable or non-boolean parameter fails the run; it is never read as
+      false. An inactive stack keeps its R2 bucket (protected) but releases its
+      static addresses, DNS records and secret grants.

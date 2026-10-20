@@ -22,7 +22,9 @@ config:
   vaultwarden-platform:stacks:
     - name: disposable
       fqdn: disposable.vault.jasonrossmedia.com.
-      active: false
+      # Switched at runtime, with no code change: scripts/stack-active.sh
+      # disposable true|false, then pulumi up (runbook §2.9).
+      activeParameter: vaultwarden-disposable-active
     - name: production
       fqdn: vault.jasonrossmedia.com.
       active: true

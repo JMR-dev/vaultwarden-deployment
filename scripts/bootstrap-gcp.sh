@@ -17,6 +17,11 @@
 #   - Creates every secret in secrets/secret-names.txt as an empty container,
 #     so platform/ can grant access by id before any value exists. Secrets stay
 #     out of Pulumi so `pulumi destroy` can never take them.
+#   - Creates the Parameter Manager parameter for every stack that
+#     platform/Pulumi.prod.yaml switches at runtime (`activeParameter`), with
+#     a first version of `false`. platform/ reads the value at every run, and
+#     scripts/stack-active.sh writes it, so it can't be a Pulumi resource that
+#     platform/ also reads.
 #
 # Pre-existing and left alone: the app state bucket
 # gs://<project>-pulumi-state and the Cloud DNS zone `vault` (both gcloud-made).
@@ -64,6 +69,7 @@ gcloud services enable --project "$PROJECT" \
   oslogin.googleapis.com \
   cloudkms.googleapis.com \
   secretmanager.googleapis.com \
+  parametermanager.googleapis.com \
   artifactregistry.googleapis.com \
   dns.googleapis.com \
   iam.googleapis.com \
@@ -127,6 +133,26 @@ while IFS= read -r name; do
     printf '    created  %s\n' "$name"
   fi
 done <"$secret_names"
+
+log "Stack on/off parameters from platform/Pulumi.prod.yaml (activeParameter)"
+while read -r param; do
+  [[ -z "$param" ]] && continue
+  if gcloud parametermanager parameters describe "$param" --location global --project "$PROJECT" >/dev/null 2>&1; then
+    printf '    exists   %s\n' "$param"
+  else
+    gcloud parametermanager parameters create "$param" --location global --project "$PROJECT" \
+      --parameter-format json --labels app=vaultwarden >/dev/null
+    printf '    created  %s\n' "$param"
+  fi
+  # A new parameter starts off. platform/ refuses to run on one with no
+  # version, and "on" would reserve static IPs and DNS nobody asked for.
+  if [[ -z "$(gcloud parametermanager parameters versions list --parameter "$param" \
+               --location global --project "$PROJECT" --limit 1 --format='value(name)')" ]]; then
+    gcloud parametermanager parameters versions create "v$(date -u +%Y%m%d-%H%M%S)" \
+      --parameter "$param" --location global --project "$PROJECT" --payload-data false >/dev/null
+    printf '    set      %s = false\n' "$param"
+  fi
+done < <(awk '$1 == "activeParameter:" {print $2}' "${repo_root}/platform/Pulumi.prod.yaml")
 
 cat <<EOF
 
