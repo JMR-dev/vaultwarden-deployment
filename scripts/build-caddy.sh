@@ -26,8 +26,6 @@ set -a
 set +a
 
 DOCKER_BUILDKIT=1 docker build \
-  --build-arg GO_BUILDER_IMAGE="$GO_BUILDER_IMAGE" \
-  --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" \
   --build-arg XCADDY_VERSION="$XCADDY_VERSION" \
   --build-arg CADDY_VERSION="$CADDY_VERSION" \
   --build-arg CORAZA_CADDY_MODULE="$CORAZA_CADDY_MODULE" \
