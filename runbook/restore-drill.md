@@ -88,7 +88,7 @@ unusable":
      -e DATABASE_URL=sqlite:///data/db-backup.sqlite3 \
      -e SIGNUPS_ALLOWED=false \
      -e WEB_VAULT_ENABLED=true \
-     -p 127.0.0.1:8081:8080 \
+     -p 127.0.0.1:8081:80 \
      docker.io/vaultwarden/server:latest
    ```
    On `vault-disposable`, reach it with
