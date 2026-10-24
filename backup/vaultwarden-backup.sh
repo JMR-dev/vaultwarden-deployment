@@ -7,8 +7,11 @@
 #    on the host fixes it.
 #
 # 2. restic backup → snapshot dir to the R2 repo, excluding the live DB triple
-#    (db.sqlite3, -wal, -shm) and the running log file. Only the snapshot
-#    copy is uploaded.
+#    (db.sqlite3, -wal, -shm), the running log file and ext4's lost+found.
+#    Only the snapshot copy is uploaded. lost+found is root-only (0700) and
+#    holds nothing but fsck's fragments; reading it fails with "permission
+#    denied", and restic then exits 3, failing every run even though the
+#    snapshot was saved. Excluding it keeps it root-only.
 #
 # 3. restic forget --prune → retention sweep.
 #
@@ -58,6 +61,7 @@ restic backup \
     --exclude "${DB}-shm" \
     --exclude "$DATA_DIR/vaultwarden.log" \
     --exclude "$DATA_DIR/vaultwarden.log.*" \
+    --exclude "$DATA_DIR/lost+found" \
     "$DATA_DIR"
 
 # Retention: a week of dailies, a month of weeklies, a year of monthlies.
