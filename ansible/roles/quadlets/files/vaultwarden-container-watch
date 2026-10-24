@@ -10,8 +10,9 @@
 #
 # A unit counts as down after two consecutive non-active polls (the timer
 # fires every 2 minutes), so auto-update restarts and the health-gated start
-# don't page. One mail per outage, one on recovery. State lives in /run and
-# resets on reboot.
+# don't page. One mail per outage, one on recovery. State lives on disk, so
+# an outage that spans a reboot (an update reboot included) still gets its
+# recovered mail.
 
 set -euo pipefail
 
@@ -20,7 +21,7 @@ shift
 [[ $# -ge 1 ]] || { echo "usage: $0 <user> <unit>..." >&2; exit 1; }
 
 # Overridable only so the strike logic can be tested off-host.
-state_dir="${WATCH_STATE_DIR:-/run/vaultwarden-container-watch}"
+state_dir="${WATCH_STATE_DIR:-/var/lib/vaultwarden-container-watch}"
 sendmail="${WATCH_SENDMAIL:-/usr/sbin/sendmail}"
 mkdir -p "$state_dir"
 host="$(hostname)"
