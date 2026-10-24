@@ -1,0 +1,13 @@
+---
+# journald rereads Storage= only at start. Restarting it is safe: services'
+# stdout/stderr streams are kept in its fd store across the restart.
+- name: restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald.service
+    state: restarted
+
+# Moves this boot's entries from /run/log/journal into /var/log/journal, so
+# the switch loses nothing.
+- name: flush journal to disk
+  ansible.builtin.command: journalctl --flush
+  changed_when: true

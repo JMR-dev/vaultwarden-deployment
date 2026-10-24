@@ -1,0 +1,20 @@
+---
+# Persistent, size-capped journal (files/journald-persistent.conf says why).
+- name: Ensure the journald drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Persistent journal, capped at 1 GB
+  ansible.builtin.copy:
+    src: journald-persistent.conf
+    dest: /etc/systemd/journald.conf.d/50-vaultwarden-persistent.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - restart journald
+    - flush journal to disk
