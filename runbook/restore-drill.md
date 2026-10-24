@@ -80,26 +80,44 @@ taken).
 This is the step that catches "the bytes restored, but the vault is
 unusable":
 
-1. Bring up a temporary Vaultwarden container against the restored DB:
+1. Make a throwaway TLS certificate for `localhost`. The web vault won't
+   work over plain HTTP, even on `localhost` (found in the 2026-10-24
+   drill), so the test container serves HTTPS itself. The key stays in
+   `$drill` and step 6 shreds it:
+   ```sh
+   mkdir "$drill/tls"
+   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+     -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+     -keyout "$drill/tls/key.pem" -out "$drill/tls/cert.pem"
+   openssl x509 -in "$drill/tls/cert.pem" -noout -fingerprint -sha256
+   ```
+2. Bring up a temporary Vaultwarden container against the restored DB,
+   serving that certificate on 127.0.0.1 only:
    ```sh
    podman run --rm -d --name vw-restore-test \
      -v "$drill/restore/data:/data:Z" \
+     -v "$drill/tls:/ssl:ro,Z" \
      -e DATA_FOLDER=/data \
      -e DATABASE_URL=sqlite:///data/db-backup.sqlite3 \
      -e SIGNUPS_ALLOWED=false \
      -e WEB_VAULT_ENABLED=true \
-     -p 127.0.0.1:8081:80 \
+     -e ROCKET_TLS='{certs="/ssl/cert.pem",key="/ssl/key.pem"}' \
+     -e ROCKET_PORT=8443 \
+     -e DOMAIN=https://localhost:8443 \
+     -p 127.0.0.1:8443:8443 \
      docker.io/vaultwarden/server:latest
    ```
    On `vault-disposable`, reach it with
-   `gcloud compute ssh vault-disposable --zone us-east1-b --tunnel-through-iap -- -L 8081:127.0.0.1:8081`.
-2. In a browser: `http://localhost:8081/`. Log in with the operator's
-   actual master password. (Web-vault crypto needs a secure context;
-   `localhost` qualifies.)
-3. Verify one login from each cipher type opens and shows the right
+   `gcloud compute ssh vault-disposable --zone us-east1-b --tunnel-through-iap -- -L 8443:127.0.0.1:8443`.
+3. In a browser: `https://localhost:8443/`. The browser warns that the
+   certificate isn't trusted. Check that its SHA-256 fingerprint matches
+   the one printed in step 1, then accept it for this site only. Log in
+   with the operator's actual master password.
+4. Verify one login from each cipher type opens and shows the right
    credential. Spot-check one Secure Note for content fidelity and one
    attachment download.
-4. Stop: `podman stop vw-restore-test`.
+5. Log out, stop the container (`podman stop vw-restore-test`), and remove
+   the browser's certificate exception for `localhost:8443`.
 
 ### 6. Tear down
 
