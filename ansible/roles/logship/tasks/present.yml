@@ -1,0 +1,195 @@
+---
+- name: unzip, for the release zip
+  ansible.builtin.package:
+    name: unzip
+    state: present
+
+# Its only group beyond its own: the journal is all it reads.
+- name: Alloy's user, in systemd-journal only
+  ansible.builtin.user:
+    name: alloy
+    comment: Grafana Alloy (telemetry to watchtower)
+    system: true
+    shell: /sbin/nologin
+    home: /var/lib/alloy
+    create_home: false
+    groups: [systemd-journal]
+    append: false
+
+# One binary per version, alloy-<version>, installed once from the verified
+# zip; /usr/local/bin/alloy points at the current one. The zip and its
+# unpacked copy (~170 MB and ~570 MB) go on disk, not /tmp, and are removed.
+# --check skips the install and the link: there is nothing to unpack or point
+# at until a real run downloads it.
+- name: Whether Alloy is installed at {{ alloy_version }}
+  ansible.builtin.stat:
+    path: "/usr/local/bin/alloy-{{ alloy_version }}"
+    get_checksum: false
+  register: logship_binary
+
+- name: Download, verify and install Alloy {{ alloy_version }}
+  when:
+    - not logship_binary.stat.exists
+    - not ansible_check_mode
+  block:
+    - name: Download directory
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: alloy.
+      register: logship_download
+
+    - name: The release zip, checked against its pinned sha256
+      ansible.builtin.get_url:
+        url: "https://github.com/grafana/alloy/releases/download/{{ alloy_version }}/alloy-linux-amd64.zip"
+        dest: "{{ logship_download.path }}/alloy-linux-amd64.zip"
+        checksum: "sha256:{{ alloy_zip_sha256 }}"
+        mode: "0600"
+        timeout: 120
+
+    - name: Unpack it
+      ansible.builtin.unarchive:
+        src: "{{ logship_download.path }}/alloy-linux-amd64.zip"
+        dest: "{{ logship_download.path }}"
+        remote_src: true
+
+    - name: Install the binary
+      ansible.builtin.copy:
+        src: "{{ logship_download.path }}/alloy-linux-amd64"
+        dest: "/usr/local/bin/alloy-{{ alloy_version }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+  always:
+    - name: Remove the download
+      ansible.builtin.file:
+        path: "{{ logship_download.path }}"
+        state: absent
+      when: logship_download.path is defined
+
+- name: Point /usr/local/bin/alloy at {{ alloy_version }}
+  ansible.builtin.file:
+    src: "alloy-{{ alloy_version }}"
+    dest: /usr/local/bin/alloy
+    state: link
+    owner: root
+    group: root
+  when: logship_binary.stat.exists or not ansible_check_mode
+  notify: restart alloy
+
+- name: Find older Alloy binaries
+  ansible.builtin.find:
+    paths: /usr/local/bin
+    patterns: "alloy-v*"
+    file_type: file
+  register: logship_old_binaries
+
+- name: Remove them
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ logship_old_binaries.files | rejectattr('path', 'equalto', '/usr/local/bin/alloy-' ~ alloy_version) | list }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Alloy's config directory
+  ansible.builtin.file:
+    path: /etc/alloy
+    state: directory
+    owner: root
+    group: alloy
+    mode: "0750"
+
+- name: Alloy's config
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../alloy/config.alloy"
+    dest: /etc/alloy/config.alloy
+    owner: root
+    group: alloy
+    mode: "0640"
+    validate: /usr/local/bin/alloy validate %s
+  notify: restart alloy
+
+- name: Alloy's per-host values
+  ansible.builtin.copy:
+    dest: /etc/alloy/alloy.env
+    content: |
+      TELEMETRY_HOST={{ inventory_hostname }}
+      TELEMETRY_ENV={{ observability_env }}
+      TELEMETRY_TENANT={{ watchtower_tenant }}
+      TELEMETRY_LOKI_URL={{ watchtower_loki_url }}
+      TELEMETRY_MIMIR_URL={{ watchtower_mimir_url }}
+      VAULT_FQDN={{ vault_fqdn }}
+    owner: root
+    group: alloy
+    mode: "0640"
+  notify: restart alloy
+
+# alloy.service hides msmtp's log (it names the alert address), and
+# InaccessiblePaths= covers only what exists when Alloy starts. Created as
+# msmtp would create it; an existing one is left alone.
+- name: The mail log exists
+  ansible.builtin.command:
+    cmd: touch /var/log/msmtp.log
+    creates: /var/log/msmtp.log
+
+- name: Alloy's unit
+  ansible.builtin.template:
+    src: alloy.service.j2
+    dest: /etc/systemd/system/alloy.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart alloy
+
+- name: Apply Alloy changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Alloy runs, and at every boot
+  ansible.builtin.systemd_service:
+    name: alloy.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  failed_when: false
+
+# The deploy checks: warnings, never failures. Not under --check, where
+# nothing was started to check.
+- name: Alloy is ready
+  ansible.builtin.uri:
+    url: http://127.0.0.1:12345/-/ready
+  register: logship_ready
+  until: logship_ready.status | default(0) == 200
+  retries: 12
+  delay: 5
+  failed_when: false
+  when: not ansible_check_mode
+
+# Only the handshake times leave the host: wg prints the server's public key
+# in the first column.
+- name: The tunnel has a handshake
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      wg show "$TUNNEL_IF" latest-handshakes | awk '$2 > 0 { ok = 1 } END { exit !ok }'
+    executable: /bin/bash
+  environment:
+    TUNNEL_IF: "{{ watchtower_tunnel_interface }}"
+  register: logship_handshake
+  until: logship_handshake.rc == 0
+  retries: 12
+  delay: 10
+  changed_when: false
+  failed_when: false
+  when: not ansible_check_mode
+
+- name: Warn when telemetry isn't flowing
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ 'Alloy is not ready on 127.0.0.1:12345 (journalctl -u alloy)' if logship_ready.status | default(0) != 200
+      else 'no WireGuard handshake with watchtower in 2 minutes (journalctl -u wg-quick@' ~ watchtower_tunnel_interface ~ ')' }}.
+      {{ inventory_hostname }} ships nothing until that's fixed; the deploy carries on.
+  when:
+    - not ansible_check_mode
+    - logship_ready.status | default(0) != 200 or logship_handshake.rc | default(1) != 0

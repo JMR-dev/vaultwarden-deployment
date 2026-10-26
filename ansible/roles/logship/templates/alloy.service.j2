@@ -1,0 +1,62 @@
+# Managed by Ansible (roles/logship). Grafana Alloy: this host's journal and
+# metrics to watchtower, over {{ watchtower_tunnel_interface }} (alloy/config.alloy
+# in the repo).
+#
+# As user alloy, whose only extra group is systemd-journal (to read the
+# journal), sandboxed: the filesystem read-only but its state directory, and
+# out of sight what it must never read. /data holds the vault and
+# Vaultwarden's own log; /var/lib/vaultwarden the rootless user's home, with
+# Caddy's access log and Coraza's audit log (whole requests); msmtp's log
+# the alert address.
+[Unit]
+Description=Grafana Alloy: telemetry to watchtower
+Documentation=https://grafana.com/docs/alloy/latest/
+Wants=network-online.target wg-quick@{{ watchtower_tunnel_interface }}.service
+After=network-online.target wg-quick@{{ watchtower_tunnel_interface }}.service
+# No peer, no Alloy (roles/tunnel removes the config, roles/logship this unit).
+ConditionPathExists=/etc/wireguard/{{ watchtower_tunnel_interface }}.conf
+# Restarts go straight back to starting (RestartMode=direct below), so root
+# gets mail when systemd gives up: five failed starts in 15 minutes.
+StartLimitIntervalSec=15min
+StartLimitBurst=5
+OnFailure=status-email-root@%n.service
+
+[Service]
+User=alloy
+Group=alloy
+EnvironmentFile=/etc/alloy/alloy.env
+Environment=GOMEMLIMIT={{ alloy_gomemlimit }}
+ExecStart=/usr/local/bin/alloy run --server.http.listen-addr=127.0.0.1:12345 --storage.path=/var/lib/alloy/data --disable-reporting /etc/alloy/config.alloy
+Restart=on-failure
+RestartMode=direct
+RestartSec=30s
+# Past the cap the OOM killer takes Alloy, not the vault.
+MemoryMax={{ alloy_memory_max }}
+# The journal position and the remote-write WAL, across restarts.
+StateDirectory=alloy
+StateDirectoryMode=0700
+UMask=0077
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=/data /var/lib/vaultwarden -/var/log/msmtp.log
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# D-Bus (the systemd collector), IPv4/6, and netlink (interface stats).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

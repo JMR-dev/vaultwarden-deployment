@@ -1,0 +1,565 @@
+// Grafana Alloy (v1.21.2) on a Vaultwarden host: ships its journal and
+// metrics to watchtower (the watchtower-observability-stack repo;
+// docs/client-telemetry.md there is the contract). Installed by
+// ansible/roles/logship as a host binary under alloy.service, because the
+// quadlets are rootless; it runs as user alloy, whose only extra group is
+// systemd-journal, and can't open /data or the rootless user's home.
+//
+// watchtower.jasonmross.dev resolves to 10.8.0.1, inside the wg-watchtower
+// tunnel (ansible/roles/tunnel), and nowhere else. Agents may only write,
+// and only into the shared tenant: Caddy there overwrites X-Scope-OrgID, so
+// the headers below only say so. Everything is TLS with a public
+// certificate, so no `insecure` settings. No OTLP receiver: nothing here
+// emits traces.
+//
+// The per-host values come from /etc/alloy/alloy.env (roles/logship):
+// TELEMETRY_HOST, TELEMETRY_ENV (production or disposable), TELEMETRY_TENANT,
+// TELEMETRY_LOKI_URL, TELEMETRY_MIMIR_URL and VAULT_FQDN.
+//
+// This host holds the owner's vault, so its logs are drop-by-default: only
+// the units and lines loki.process "scrub" allows ship at all, and then
+// scrubbed. Nothing on the server scrubs; what leaves here is stored.
+// stage.replace rewrites each capture group with `replace` and nothing else
+// (a regex without one changes nothing), so every rule captures exactly the
+// part to hide. scripts/check-alloy-scrub.sh runs the block between the
+// scrub markers over alloy/testdata/scrub.log in CI.
+
+logging {
+	level  = "info"
+	format = "logfmt"
+}
+
+// ============================================================
+// LOGS  ──► Loki
+// ============================================================
+
+loki.source.journal "system" {
+	forward_to    = [loki.process.scrub.receiver]
+	relabel_rules = loki.relabel.journal.rules
+	labels        = {service = "vaultwarden", host = sys.env("TELEMETRY_HOST"), env = sys.env("TELEMETRY_ENV")}
+}
+
+loki.relabel "journal" {
+	forward_to = []
+
+	// conmon splits a long line into several journal entries and marks all
+	// but the last. Drop those, so no piece of a long record (an audit log
+	// with headers in it) ships out of context; a JSON pipeline drops the
+	// last piece as malformed.
+	rule {
+		source_labels = ["__journal_container_partial_message"]
+		regex         = "true"
+		action        = "drop"
+	}
+
+	rule {
+		source_labels = ["__journal__systemd_unit"]
+		target_label  = "unit"
+	}
+
+	// A rootless (user) unit's name is in _SYSTEMD_USER_UNIT; its
+	// _SYSTEMD_UNIT is just user@<uid>.service. The quadlets (vaultwarden,
+	// caddy) and podman-auto-update are user units of uid 1100.
+	rule {
+		source_labels = ["__journal__systemd_user_unit"]
+		regex         = "(.+)"
+		target_label  = "unit"
+	}
+
+	// systemd's own lines about a unit (started, stopped, failed) come from
+	// PID 1 or the rootless user's manager, both in init.scope, and name the
+	// unit in UNIT= or USER_UNIT=. File them under that unit, as
+	// `journalctl -u` does. Only from the managers: _SYSTEMD_*UNIT is set by
+	// journald, but any process may write a UNIT= field.
+	rule {
+		source_labels = ["__journal__systemd_unit", "__journal_unit"]
+		separator     = ";"
+		regex         = "init\\.scope;(.+)"
+		target_label  = "unit"
+	}
+
+	rule {
+		source_labels = ["__journal__systemd_user_unit", "__journal_user_unit"]
+		separator     = ";"
+		regex         = "init\\.scope;(.+)"
+		target_label  = "unit"
+	}
+
+	// sudo, and sshd once a login has its session, log from that session's
+	// scope (session-<n>.scope). Name them by program, so the scrub can
+	// allow them and nothing else from a session, and a new login isn't a
+	// new stream.
+	rule {
+		source_labels = ["__journal__systemd_unit", "__journal_syslog_identifier"]
+		separator     = ";"
+		regex         = "session-[0-9]+\\.scope;sudo"
+		target_label  = "unit"
+		replacement   = "sudo"
+	}
+
+	rule {
+		source_labels = ["__journal__systemd_unit", "__journal_syslog_identifier"]
+		separator     = ";"
+		regex         = "session-[0-9]+\\.scope;sshd(-session)?"
+		target_label  = "unit"
+		replacement   = "sshd.service"
+	}
+
+	rule {
+		source_labels = ["__journal_container_name"]
+		target_label  = "container"
+	}
+
+	rule {
+		source_labels = ["__journal_priority_keyword"]
+		target_label  = "level"
+	}
+}
+
+// scrub: begin (scripts/check-alloy-scrub.sh tests what is between the markers)
+loki.process "scrub" {
+	forward_to = [loki.write.watchtower.receiver]
+
+	// ---- Vaultwarden's own rules: drop by default ----------------------
+	// Only the units allowed below ship anything, most of them only some
+	// lines, and those with their user fields cut. The example's rules
+	// (from "Coraza's audit records" on, unchanged) then scrub what's left.
+
+	// The kernel's sampled firewall drops: addresses and ports. They stay on
+	// the host (journalctl -k -g nft-drop).
+	stage.drop {
+		expression          = `^nft-drop: `
+		drop_counter_reason = "nft_drop"
+	}
+
+	// Anything from a unit not on this list. unit is the systemd unit (the
+	// user unit for the rootless ones), or "sudo" and sshd.service for those
+	// two in a login session (loki.relabel "journal").
+	stage.match {
+		selector            = `{unit!~"vaultwarden\\.service|caddy\\.service|fail2ban\\.service|vaultwarden-backup\\.service|restic-check\\.service|dnf-automatic(-install)?\\.service|dnf-makecache\\.service|podman-auto-update\\.service|wg-quick@wg-watchtower\\.service|alloy\\.service|sshd\\.service|sudo"}`
+		action              = "drop"
+		drop_counter_reason = "not_allowed"
+	}
+
+	// Caddy. Its access log and Coraza's audit log are files Alloy can't
+	// read (alloy.service). What reaches the journal is handler and proxy
+	// errors, which carry the request, Coraza's rule matches, which carry
+	// the matched data, and Caddy's own lines. The first two are counted;
+	// then all of it is dropped. The last piece of a split JSON line doesn't
+	// parse, so it isn't even counted.
+	stage.match {
+		selector = `{unit="caddy.service", container="caddy"}`
+
+		stage.json {
+			expressions    = {logger = "", request = ""}
+			drop_malformed = true
+		}
+
+		// A line without a request extracts one anyway, as null.
+		stage.template {
+			source   = "has_request"
+			template = `{{ if .request }}true{{ end }}`
+		}
+
+		stage.metrics {
+			metric.counter {
+				name        = "caddy_request_lines"
+				description = "Caddy log lines about a request (here handler and proxy errors: the access log is a file), counted, then dropped."
+				source      = "has_request"
+				value       = "true"
+				action      = "inc"
+			}
+
+			metric.counter {
+				name        = "caddy_waf_matches"
+				description = "Coraza rule matches (DetectionOnly), counted, then dropped."
+				source      = "logger"
+				value       = "http.handlers.waf"
+				action      = "inc"
+			}
+		}
+	}
+
+	stage.match {
+		selector            = `{unit="caddy.service"}`
+		action              = "drop"
+		drop_counter_reason = "caddy"
+	}
+
+	// fail2ban: its lines name the addresses it bans. Bans are counted (not
+	// "Restore Ban", a ban put back at a restart), then every line dropped.
+	stage.match {
+		selector = `{unit="fail2ban.service"} |~ "\\] Ban "`
+
+		stage.metrics {
+			metric.counter {
+				name        = "fail2ban_bans"
+				description = "fail2ban bans, counted, then dropped."
+				match_all   = true
+				action      = "inc"
+			}
+		}
+	}
+
+	stage.match {
+		selector            = `{unit="fail2ban.service"}`
+		action              = "drop"
+		drop_counter_reason = "fail2ban"
+	}
+
+	// Vaultwarden itself: only failed logins, 2FA failures and its start
+	// banner. Its other lines can name the sites of saved logins (icon
+	// downloads) or carry what a client sent.
+	stage.match {
+		selector            = `{unit="vaultwarden.service", container="vaultwarden"} !~ "^(?:\\[[^\\]]*\\])*\\s*(?:Username or password is incorrect\\. Try again\\.|Invalid TOTP code|Invalid 2FA provided|Invalid admin token)|^\\|\\s+(?:Starting Vaultwarden|Version [0-9][^|]*?)\\s+\\|$"`
+		action              = "drop"
+		drop_counter_reason = "vaultwarden"
+	}
+
+	stage.match {
+		selector = `{unit="vaultwarden.service", container="vaultwarden"}`
+
+		// The client's address, and the whole username field to the end of
+		// the line: a password typed into it lands there. Keys and all, so
+		// neither "IP:" nor "Username:" ships (watchtower's PII check).
+		stage.replace {
+			expression = `\b(IP: \S+?)\.?(?:\s|$)`
+			replace    = "[REDACTED-IP]"
+		}
+
+		stage.replace {
+			expression = `\b(Username: .*)$`
+			replace    = "[REDACTED-USER]"
+		}
+
+		// Nothing with a URL or a host name in it ships.
+		stage.drop {
+			expression          = `(?i)\b[a-z][a-z0-9+.-]*://|\b(?:[a-z0-9-]+\.)+[a-z]{2,63}\b`
+			drop_counter_reason = "vaultwarden_host"
+		}
+
+		stage.match {
+			selector = `{unit="vaultwarden.service"} |= "Username or password is incorrect"`
+
+			stage.metrics {
+				metric.counter {
+					name        = "vaultwarden_failed_logins"
+					description = "Vaultwarden logins refused for a wrong username or password."
+					match_all   = true
+					action      = "inc"
+				}
+			}
+		}
+
+		stage.match {
+			selector = `{unit="vaultwarden.service"} |~ "Invalid TOTP code|Invalid 2FA provided"`
+
+			stage.metrics {
+				metric.counter {
+					name        = "vaultwarden_failed_2fa"
+					description = "Vaultwarden logins refused at the second factor."
+					match_all   = true
+					action      = "inc"
+				}
+			}
+		}
+	}
+
+	// systemd's own lines about Vaultwarden's unit: starts, stops, failures.
+	// Anything else there without a container (podman's events) goes.
+	stage.match {
+		selector            = `{unit="vaultwarden.service", container!="vaultwarden"} !~ "^(?:(?:Started|Starting|Stopping|Stopped|Failed to start) vaultwarden\\.service\\b|vaultwarden\\.service: )"`
+		action              = "drop"
+		drop_counter_reason = "vaultwarden"
+	}
+
+	// sshd and sudo: that someone logged in or ran a command ships; who, and
+	// with which key, doesn't. OS Login names are email addresses.
+	stage.match {
+		selector = `{unit=~"sshd\\.service|sudo"}`
+
+		stage.replace {
+			expression = `\b(?:for|from|by) (?:invalid |illegal |authenticating )?user ([^\s(]+)`
+			replace    = "[REDACTED-USER]"
+		}
+
+		stage.replace {
+			expression = `\b(?:Accepted|Failed|Postponed) \S+ for ([^\s(]+) from\b`
+			replace    = "[REDACTED-USER]"
+		}
+
+		stage.replace {
+			expression = `\bInvalid user ([^\s(]+)`
+			replace    = "[REDACTED-USER]"
+		}
+
+		stage.replace {
+			expression = `\bby ([^\s(]+)\(uid=`
+			replace    = "[REDACTED-USER]"
+		}
+
+		stage.replace {
+			expression = `(?i)\b(?:r?user|logname)=([^\s;]+)`
+			replace    = "[REDACTED-USER]"
+		}
+
+		// sudo: "<user> : TTY=… ; PWD=<their home> ; USER=… ; COMMAND=…".
+		stage.replace {
+			expression = `^\s*([^\s:]+) : `
+			replace    = "[REDACTED-USER]"
+		}
+
+		stage.replace {
+			expression = `\bPWD=([^;]*[^;\s])`
+			replace    = "[REDACTED-PATH]"
+		}
+
+		stage.replace {
+			expression = `\b(?:SHA256|MD5):([A-Za-z0-9+/=:]+)`
+			replace    = "[REDACTED-KEY]"
+		}
+	}
+
+	// ---- The example's rules (config/alloy/config.alloy.example) -------
+
+	// Coraza's audit records hold whole requests: headers, cookies, bodies.
+	stage.drop {
+		expression          = `"transaction"\s*:\s*\{`
+		drop_counter_reason = "audit_record"
+	}
+
+	// JWTs, and bearer tokens wherever they appear.
+	stage.replace {
+		expression = `\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*)`
+		replace    = "[REDACTED-JWT]"
+	}
+
+	stage.replace {
+		expression = `(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{8,})`
+		replace    = "[REDACTED-CREDENTIAL]"
+	}
+
+	// Authorization and cookie headers, whole: as a JSON field (a string, an
+	// array or an object), then as `Name: value`, to the end of the line.
+	stage.replace {
+		expression = `(?i)"(?:proxy-)?authorization"\s*:\s*(\[[^\]]*\]|"[^"]*")`
+		replace    = "[REDACTED-CREDENTIAL]"
+	}
+
+	stage.replace {
+		expression = `(?i)"(?:set-)?cookies?"\s*:\s*(\[[^\]]*\]|\{[^}]*\}|"[^"]*")`
+		replace    = "[REDACTED-COOKIE]"
+	}
+
+	stage.replace {
+		expression = `(?i)\b(?:proxy-)?authorization\s*[:=]\s*([^\r\n]+)`
+		replace    = "[REDACTED-CREDENTIAL]"
+	}
+
+	stage.replace {
+		expression = `(?i)\b(?:set-)?cookie\s*[:=]\s*([^\r\n]+)`
+		replace    = "[REDACTED-COOKIE]"
+	}
+
+	// Secrets under any key that names one (DB_PASSWORD, X-API-Key,
+	// "session", privateKey, ...): as JSON with a double- or single-quoted
+	// value, then as key=value or key: value, quoted or bare.
+	stage.replace {
+		expression = `(?i)"[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|session|credential)[\w.-]*"\s*:\s*"([^"]*)"`
+		replace    = "[REDACTED-SECRET]"
+	}
+
+	stage.replace {
+		expression = `(?i)"[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|session|credential)[\w.-]*"\s*:\s*'([^']*)'`
+		replace    = "[REDACTED-SECRET]"
+	}
+
+	stage.replace {
+		expression = `(?i)[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|session|credential)[\w.-]*\s*[=:]\s*"([^"]*)"`
+		replace    = "[REDACTED-SECRET]"
+	}
+
+	stage.replace {
+		expression = `(?i)[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|session|credential)[\w.-]*\s*[=:]\s*'([^']*)'`
+		replace    = "[REDACTED-SECRET]"
+	}
+
+	stage.replace {
+		expression = `(?i)[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|session|credential)[\w.-]*\s*[=:]\s*([^\s&,;"'\[\]{}()<>]+)`
+		replace    = "[REDACTED-SECRET]"
+	}
+
+	// Other credentials in query strings.
+	stage.replace {
+		expression = `(?i)[?&](?:code|state|key|sig|signature|x-amz-signature|x-amz-credential|x-goog-signature|x-goog-credential)=([^&\s"#]+)`
+		replace    = "[REDACTED-SECRET]"
+	}
+
+	// Passwords in connection strings: scheme://user:PASSWORD@host.
+	stage.replace {
+		expression = `(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]*:([^@\s/]+)@`
+		replace    = "[REDACTED-SECRET]"
+	}
+
+	// Email addresses, URL-encoded (%40) too.
+	stage.replace {
+		expression = `\b([A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})\b`
+		replace    = "[REDACTED-EMAIL]"
+	}
+
+	// OS Login usernames: an email address in a domain in use
+	// (user_gmail_com), or a service account's number (sa_<id>).
+	stage.replace {
+		expression = `\b([a-z0-9][a-z0-9._-]*_(?:gmail_com|googlemail_com|jasonmross_dev))\b`
+		replace    = "[REDACTED-USER]"
+	}
+
+	stage.replace {
+		expression = `\b(sa_\d{10,})\b`
+		replace    = "[REDACTED-USER]"
+	}
+
+	// IPv4 addresses, whole. A four-part version number goes too.
+	stage.replace {
+		expression = `\b((?:\d{1,3}\.){3}\d{1,3})\b`
+		replace    = "[REDACTED-IP]"
+	}
+
+	// IPv6 addresses: eight groups, or compressed with "::" and a group after
+	// it or two before it, so never a clock time or a Rust path (db::query).
+	// Then the same after a colon (client:2001:db8::1), with three groups or
+	// more.
+	stage.replace {
+		expression = `(?:^|[^\w:.])((?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6})?::[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6}|[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){1,6}::)`
+		replace    = "[REDACTED-IP6]"
+	}
+
+	stage.replace {
+		expression = `:((?:[0-9A-Fa-f]{1,4}:){2,6}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,5})?|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){1,5})`
+		replace    = "[REDACTED-IP6]"
+	}
+
+	// MAC addresses.
+	stage.replace {
+		expression = `\b((?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})\b`
+		replace    = "[REDACTED-MAC]"
+	}
+
+	// Card numbers: 15 or 16 digits starting 2 to 6, unbroken or in dashed
+	// fours. Never an epoch time (they start with 1 until 2033) or a list of
+	// ports; a number typed with spaces gets through.
+	stage.replace {
+		expression = `\b([2-6]\d{14,15}|[2-6]\d{3}(?:-\d{4}){3})\b`
+		replace    = "[REDACTED-PAN]"
+	}
+
+	// UUIDs, which name users and their records.
+	stage.replace {
+		expression = `\b([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})\b`
+		replace    = "[REDACTED-UUID]"
+	}
+
+	// A secret in a shape none of the rules caught: drop the line.
+	stage.drop {
+		expression          = `(?i)[\w.-]*(?:password|passwd|secret|ssn|cvv|cvc)[\w.-]*\s*[:=]\s*[^\s\["']`
+		drop_counter_reason = "secret"
+	}
+}
+// scrub: end
+
+loki.write "watchtower" {
+	endpoint {
+		url     = sys.env("TELEMETRY_LOKI_URL")
+		headers = {"X-Scope-OrgID" = sys.env("TELEMETRY_TENANT")}
+
+		// Keep retrying through a watchtower restart or reboot (about a
+		// day at most); the journal position waits meanwhile.
+		max_backoff_period  = "5m"
+		max_backoff_retries = 300
+		retry_on_http_429   = true
+	}
+}
+
+// ============================================================
+// METRICS  ──► Mimir
+// ============================================================
+
+prometheus.exporter.unix "host" {
+	set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "netdev", "pressure", "stat", "systemd", "time", "uname", "vmstat"]
+
+	// alloy.service makes /data inaccessible, so a statfs there would read
+	// the placeholder systemd mounts over it, not the data disk.
+	filesystem {
+		mount_points_exclude = "^/(data|dev|proc|run/credentials/.+|sys|var/lib/docker/.+)($|/)"
+	}
+}
+
+prometheus.exporter.self "alloy" { }
+
+// Vaultwarden's liveness through the public name: TLS, Caddy and the app.
+prometheus.exporter.blackbox "vaultwarden" {
+	config = "{ modules: { https_2xx: { prober: http, timeout: 10s, http: { fail_if_not_ssl: true } } } }"
+
+	target {
+		name    = "vaultwarden"
+		address = "https://" + sys.env("VAULT_FQDN") + "/alive"
+		module  = "https_2xx"
+	}
+}
+
+discovery.relabel "unix" {
+	targets = prometheus.exporter.unix.host.targets
+
+	rule {
+		target_label = "job"
+		replacement  = "integrations/unix"
+	}
+}
+
+discovery.relabel "alloy" {
+	targets = prometheus.exporter.self.alloy.targets
+
+	rule {
+		target_label = "job"
+		replacement  = "alloy"
+	}
+}
+
+discovery.relabel "blackbox" {
+	targets = prometheus.exporter.blackbox.vaultwarden.targets
+
+	rule {
+		target_label = "job"
+		replacement  = "blackbox"
+	}
+}
+
+// Caddy's metrics site, published on loopback only (quadlets/caddy.container.j2).
+// instance is the host, not the address: no label from an IP.
+discovery.relabel "local" {
+	targets = array.concat(
+		discovery.relabel.unix.output,
+		discovery.relabel.alloy.output,
+		discovery.relabel.blackbox.output,
+		[{"__address__" = "127.0.0.1:2020", "job" = "caddy"}],
+	)
+
+	rule {
+		target_label = "instance"
+		replacement  = sys.env("TELEMETRY_HOST")
+	}
+}
+
+prometheus.scrape "local" {
+	targets         = discovery.relabel.local.output
+	forward_to      = [prometheus.remote_write.watchtower.receiver]
+	scrape_interval = "60s"
+}
+
+prometheus.remote_write "watchtower" {
+	endpoint {
+		url     = sys.env("TELEMETRY_MIMIR_URL")
+		headers = {"X-Scope-OrgID" = sys.env("TELEMETRY_TENANT")}
+	}
+	external_labels = {service = "vaultwarden", host = sys.env("TELEMETRY_HOST"), env = sys.env("TELEMETRY_ENV")}
+}

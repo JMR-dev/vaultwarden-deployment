@@ -1,0 +1,32 @@
+---
+# No peer, or observability_enabled false: no Alloy. Its user stays (a
+# system account with no login and nothing left to own).
+- name: Alloy stopped
+  ansible.builtin.shell:
+    cmd: |
+      set -eo pipefail
+      [[ "$(systemctl show alloy.service -p LoadState --value)" == loaded ]] || exit 0
+      if systemctl is-enabled --quiet alloy.service || systemctl is-active --quiet alloy.service; then
+        systemctl disable --now alloy.service
+        systemctl reset-failed alloy.service 2>/dev/null || true
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  register: logship_down
+  changed_when: "'CHANGED' in logship_down.stdout"
+
+- name: Find Alloy binaries
+  ansible.builtin.find:
+    paths: /usr/local/bin
+    patterns: "alloy-v*"
+    file_type: file
+  register: logship_binaries
+
+- name: Alloy's files removed
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ ['/etc/systemd/system/alloy.service', '/etc/alloy', '/var/lib/alloy', '/usr/local/bin/alloy']
+       + (logship_binaries.files | map(attribute='path') | list) }}
+  notify: reload systemd

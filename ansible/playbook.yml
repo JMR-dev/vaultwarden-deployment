@@ -55,5 +55,8 @@
       tags: [secrets]
     - role: quadlets
       tags: [quadlets]
+    # After quadlets, so Caddy's metrics site is up for its first scrape.
+    - role: logship
+      tags: [logship, telemetry]
     - role: backup
       tags: [backup]
