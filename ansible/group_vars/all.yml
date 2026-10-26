@@ -82,3 +82,26 @@ vaultwarden_signups_window_minutes: 30
 # dnf-automatic maintenance window.
 dnf_reboot_window: "04:00"
 dnf_reboot_dow: "Tue"
+
+# Telemetry to watchtower (the watchtower-observability-stack repo; its
+# docs/client-telemetry.md is the contract). roles/tunnel makes this host one
+# of watchtower's agent peers over WireGuard, and roles/logship's Alloy ships
+# the journal, drop-by-default (alloy/config.alloy), and host metrics through
+# it. Switched per stack by observability_enabled in inventory/<stack>.yml
+# (not here: playbook group_vars would override the inventory's value). Off,
+# or with no peer, both roles remove what they installed.
+#
+# The peer's config is a secret in watchtower's project, one per stack, read
+# on the controller by the deploy's identity: vaultwarden-deployer may read
+# these two and nothing else there (watchtower's scripts/bootstrap.sh).
+watchtower_gcp_project: watchtower-observe
+watchtower_peer_secret: "wireguard-vaultwarden-{{ stack }}-peer"
+# wg-easy's range, the only route the tunnel may carry. A config routing
+# anything else is refused (roles/tunnel).
+watchtower_tunnel_cidr: 10.8.0.0/24
+# wg-quick names the interface after its config file; roles/nftables drops
+# anything that comes in on it.
+watchtower_tunnel_interface: wg-watchtower
+# Added when the config lacks them (watchtower sets both).
+watchtower_tunnel_keepalive: 25
+watchtower_tunnel_mtu: 1380

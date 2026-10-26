@@ -1,0 +1,193 @@
+---
+# This host as one of watchtower's agent peers (the watchtower-observability-
+# stack repo, docs/client-telemetry.md): a WireGuard client that dials out to
+# watchtower's proxy and routes only the tunnel range, so roles/logship's
+# Alloy can push to watchtower.jasonmross.dev (10.8.0.1). Agents may only
+# write there, and nothing comes in over the tunnel (roles/nftables).
+#
+# The peer config, private key included, is a secret in watchtower's project,
+# read on the controller by the deploy's identity (vaultwarden-deployer, which
+# watchtower's scripts/bootstrap.sh lets read this stack's peer and nothing
+# else). It never reaches a log: every task that holds it is no_log, and only
+# its rc and stderr are looked at in the open.
+#
+# No peer (the secret missing, empty or unreadable) or observability_enabled
+# false is a warning, never a failed deploy: the tunnel is stopped and its
+# config removed, and roles/logship does the same for Alloy. Neither is a
+# tunnel that won't come up. A config that fails the checks below is
+# refused, and fails the deploy before anything is written.
+
+- name: Read this stack's watchtower peer
+  ansible.builtin.command:
+    argv:
+      - gcloud
+      - secrets
+      - versions
+      - access
+      - latest
+      - "--secret={{ watchtower_peer_secret }}"
+      - "--project={{ watchtower_gcp_project }}"
+  delegate_to: localhost
+  become: false
+  register: tunnel_peer
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when: observability_enabled | default(false) | bool
+
+- name: Whether there is a peer
+  ansible.builtin.set_fact:
+    tunnel_enabled: >-
+      {{ (observability_enabled | default(false) | bool)
+         and tunnel_peer.rc | default(1) == 0
+         and tunnel_peer.stdout | default('') | trim | length > 0 }}
+    tunnel_peer_problem: >-
+      {{ 'empty' if tunnel_peer.rc | default(1) == 0
+         else 'not found' if 'NOT_FOUND' in tunnel_peer.stderr | default('')
+         else 'not readable by this identity' if 'PERMISSION_DENIED' in tunnel_peer.stderr | default('')
+         else 'unreadable' }}
+
+- name: No peer, no telemetry (a warning, not a failure)
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ watchtower_gcp_project }}/{{ watchtower_peer_secret }} is
+      {{ tunnel_peer_problem }}, so {{ inventory_hostname }} ships no telemetry:
+      the tunnel and Alloy are stopped and their config removed. The next
+      deploy after the secret is fixed brings them back.
+  when:
+    - observability_enabled | default(false) | bool
+    - not tunnel_enabled | bool
+
+# The config runs here as root (wg-quick). watchtower's deploy already pins
+# the peer's settings and refuses to publish anything else; check again.
+# PostUp and the like are shell commands; Table, FwMark and more AllowedIPs
+# would route other traffic through watchtower, the metadata server's
+# included, taking the VM's credentials, image pulls and DNS-01 with it.
+- name: The peer config routes the tunnel range only, and runs nothing
+  vars:
+    tunnel_allowed: >-
+      {{ tunnel_peer.stdout | regex_findall('(?im)^[ \t]*AllowedIPs[ \t]*=[ \t]*(.*?)[ \t]*$')
+         | map('replace', ' ', '') | join(',') }}
+  ansible.builtin.assert:
+    that:
+      - tunnel_peer.stdout is not search('(?im)^[ \t]*(PreUp|PostUp|PreDown|PostDown|Table|FwMark|SaveConfig)[ \t]*=')
+      - tunnel_peer.stdout | regex_findall('(?m)^[ \t]*\[Interface\]') | length == 1
+      - tunnel_peer.stdout | regex_findall('(?m)^[ \t]*\[Peer\]') | length == 1
+      - tunnel_peer.stdout is search('(?im)^[ \t]*Endpoint[ \t]*=[ \t]*\S')
+      - tunnel_allowed == watchtower_tunnel_cidr
+    quiet: true
+  when: tunnel_enabled | bool
+  no_log: true
+
+- name: WireGuard tools
+  ansible.builtin.package:
+    name: wireguard-tools
+    state: present
+  when: tunnel_enabled | bool
+
+- name: WireGuard config directory
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: tunnel_enabled | bool
+
+# No diff under --diff either: it would be the private key.
+- name: Tunnel config, normalised
+  ansible.builtin.template:
+    src: wg-watchtower.conf.j2
+    dest: "/etc/wireguard/{{ watchtower_tunnel_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  when: tunnel_enabled | bool
+  notify: restart watchtower tunnel
+  diff: false
+  no_log: true
+
+- name: Tunnel unit drop-in directory
+  ansible.builtin.file:
+    path: "/etc/systemd/system/wg-quick@{{ watchtower_tunnel_interface }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: tunnel_enabled | bool
+
+- name: OnFailure email for the tunnel
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/wg-quick@{{ watchtower_tunnel_interface }}.service.d/onfailure.conf"
+    content: |
+      [Unit]
+      OnFailure=status-email-root@%n.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: tunnel_enabled | bool
+  notify: reload systemd
+
+- name: Apply tunnel changes now
+  ansible.builtin.meta: flush_handlers
+
+# Telemetry never fails a deploy: a tunnel that won't come up is a warning
+# here and a mail to root (OnFailure above).
+- name: Tunnel up, and at every boot
+  ansible.builtin.systemd_service:
+    name: "wg-quick@{{ watchtower_tunnel_interface }}.service"
+    enabled: true
+    state: started
+  failed_when: false
+  when: tunnel_enabled | bool
+
+# Not under --check, where nothing was started to check.
+- name: Is the tunnel up
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "wg-quick@{{ watchtower_tunnel_interface }}.service"]
+  register: tunnel_active
+  changed_when: false
+  failed_when: false
+  when:
+    - tunnel_enabled | bool
+    - not ansible_check_mode
+
+- name: Warn when the tunnel won't come up
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: wg-quick@{{ watchtower_tunnel_interface }} is {{ tunnel_active.stdout }}
+      (journalctl -u wg-quick@{{ watchtower_tunnel_interface }} on the host). Telemetry
+      from {{ inventory_hostname }} waits for it; the deploy carries on.
+  when:
+    - tunnel_enabled | bool
+    - not ansible_check_mode
+    - tunnel_active.stdout != 'active'
+
+- name: No peer, no tunnel
+  ansible.builtin.shell:
+    cmd: |
+      set -eo pipefail
+      unit="wg-quick@${TUNNEL_IF}.service"
+      [[ "$(systemctl show "$unit" -p LoadState --value)" == loaded ]] || exit 0
+      if systemctl is-enabled --quiet "$unit" || systemctl is-active --quiet "$unit"; then
+        systemctl disable --now "$unit"
+        systemctl reset-failed "$unit" 2>/dev/null || true
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  environment:
+    TUNNEL_IF: "{{ watchtower_tunnel_interface }}"
+  register: tunnel_down
+  changed_when: "'CHANGED' in tunnel_down.stdout"
+  when: not tunnel_enabled | bool
+
+- name: No peer, no stale config
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/wireguard/{{ watchtower_tunnel_interface }}.conf"
+    - "/etc/systemd/system/wg-quick@{{ watchtower_tunnel_interface }}.service.d"
+  when: not tunnel_enabled | bool
+  notify: reload systemd

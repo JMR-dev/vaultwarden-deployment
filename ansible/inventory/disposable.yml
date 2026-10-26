@@ -14,3 +14,7 @@ all:
     stack: disposable
     gce_zone: us-east1-b
     vault_fqdn: disposable.vault.jasonrossmedia.com
+    # Telemetry to watchtower (group_vars/all.yml), with this stack's own peer.
+    # It stays out of watchtower's alert list: it exists only during a test
+    # cycle.
+    observability_enabled: true

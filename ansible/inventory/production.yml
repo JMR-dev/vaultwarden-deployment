@@ -14,3 +14,5 @@ all:
     stack: production
     gce_zone: us-east1-b
     vault_fqdn: vault.jasonrossmedia.com
+    # Telemetry to watchtower (group_vars/all.yml), with this stack's own peer.
+    observability_enabled: true
