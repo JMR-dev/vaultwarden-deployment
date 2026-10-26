@@ -1,0 +1,50 @@
+LEAK[0-9]
+192\.0\.2\.
+198\.51\.100\.
+10\.0\.0\.5
+2001:db8
+fe80::1
+ ::1\b
+Zm9vOmJhcg
+@example\.com
+@mail\.example\.org
+%40leak
+fixture_user99
+sa_1234567890123
+4111111111111111
+5500-0000
+378282246310005
+3f2504e0
+7c9e6679
+eyJhbGci
+"transaction"
+078051120
+00:1a:2b
+correct horse
+mallory
+example\.net
+mybank
+203\.0\.113\.
+192\.0\.2\.
+35\.235\.24
+10\.8\.0\.
+sa_[0-9]{10}
+deployer_tester
+/home/
+\bUsername:
+\bIP:
+SHA256:[A-Za-z0-9]
+nft-drop
+Ban [0-9]
+Found [0-9]
+Coraza
+"logger"
+http\.log
+vault\.jasonrossmedia\.com
+/identity/
+favicon
+dani-garcia
+health_status
+New session
+Invoked with
+restic\.env

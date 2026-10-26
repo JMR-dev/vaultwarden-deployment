@@ -4,7 +4,7 @@
 # only thing between a service's logs and storage (docs/client-telemetry.md).
 #
 #   scripts/check-alloy-scrub.sh [config] [fixture]
-#   (defaults: config/alloy/config.alloy.example, config/alloy/testdata/scrub.log)
+#   (defaults: alloy/config.alloy, alloy/testdata/scrub.log)
 #
 # The rules are the loki.process block between the config's
 # "// scrub: begin" and "// scrub: end" lines; they run with the fixture's
@@ -15,15 +15,30 @@
 # and nothing that comes out may match a line of <fixture>.forbidden (grep
 # -E). The last line mustn't be a drop: the run ends when it comes out.
 #
-# SCRUB_SHOW=1 prints what came out. Needs alloy and jq. Service repos copy
-# it with the example config.
+# Copied from watchtower-observability-stack (scripts/check-alloy-scrub.sh),
+# with additions for rules keyed on labels and anchored at the start of a
+# line, as this repo's are:
+#   - The rules see a line without its tag (it travels as structured
+#     metadata), so `^` means the start of the journal's message.
+#   - After the tag, a line may name the labels the journal source would give
+#     it, in logfmt between braces: `keep:01 {unit=caddy.service
+#     container=caddy} <line>` (unit, container and level). They're set and
+#     the braces cut before the rules see the line; same: compares without
+#     them. A line whose own text starts with "{" needs the braces, even
+#     empty ones.
+#   - Each line of an optional <fixture>.metrics (grep -E, # comments) must
+#     match a line of Alloy's own /metrics after the run: the counters the
+#     rules keep.
+#
+# SCRUB_SHOW=1 prints what came out. Needs alloy, jq and curl.
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-config="${1:-${repo_root}/config/alloy/config.alloy.example}"
-fixture="${2:-${repo_root}/config/alloy/testdata/scrub.log}"
+config="${1:-${repo_root}/alloy/config.alloy}"
+fixture="${2:-${repo_root}/alloy/testdata/scrub.log}"
 forbidden="${fixture%.log}.forbidden"
+metrics="${fixture%.log}.metrics"
 port="${ALLOY_TEST_PORT:-12398}"
 
 fail() { echo "scrub check: $*" >&2; exit 1; }
@@ -45,7 +60,37 @@ last="$(tail -n 1 "$fixture" | cut -d' ' -f1)"
 {
   printf 'logging {\n\tlevel  = "info"\n\tformat = "json"\n}\n\n'
   printf 'loki.source.file "fixture" {\n\ttargets    = [{"__path__" = "%s", "service" = "fixture", "job" = "fixture"}]\n' "${work}/in.log"
-  printf '\tforward_to = [loki.process.%s.receiver]\n}\n\n' "$name"
+  printf '\tforward_to = [loki.process.fixture_labels.receiver]\n}\n\n'
+  # Each line's tag goes to structured metadata, where the rules can't see
+  # it, and its {labels} to labels; the rules get the rest, the line as the
+  # journal would give it.
+  sed "s/SCRUB_BLOCK/${name}/" <<'EOF'
+loki.process "fixture_labels" {
+	forward_to = [loki.process.SCRUB_BLOCK.receiver]
+
+	stage.regex {
+		expression = `^(?P<fixture_tag>\S+) (?:\{(?P<fixture_labels>[^}]*)\} )?(?P<fixture_line>.*)$`
+	}
+
+	stage.logfmt {
+		mapping = {unit = "", container = "", level = ""}
+		source  = "fixture_labels"
+	}
+
+	stage.labels {
+		values = {unit = "", container = "", level = ""}
+	}
+
+	stage.structured_metadata {
+		values = {fixture_tag = ""}
+	}
+
+	stage.output {
+		source = "fixture_line"
+	}
+}
+
+EOF
   sed -E 's/^([[:space:]]*forward_to[[:space:]]*=[[:space:]]*)\[.*\]$/\1[loki.echo.out.receiver]/' <<<"$block"
   printf '\nloki.echo "out" { }\n'
 } >"${work}/harness.alloy"
@@ -56,7 +101,9 @@ pid=$!
 
 out="${work}/out.txt"
 for _ in $(seq 60); do
-  jq -r 'select(.component_id == "loki.echo.out") | .entry' "${work}/alloy.log" 2>/dev/null >"$out" || true
+  jq -r 'select(.component_id == "loki.echo.out")
+    | "\(.structured_metadata | fromjson | .fixture_tag) \(.entry)"' \
+    "${work}/alloy.log" 2>/dev/null >"$out" || true
   grep -q "^${last} " "$out" && break
   kill -0 "$pid" 2>/dev/null || { tail -20 "${work}/alloy.log" >&2; fail "alloy exited"; }
   sleep 0.5
@@ -66,6 +113,7 @@ grep -q "^${last} " "$out" || { tail -20 "${work}/alloy.log" >&2; fail "${last} 
 [[ -z "${SCRUB_SHOW:-}" ]] || cat "$out"
 bad=0
 while read -r tag line; do
+  [[ "$line" =~ ^\{[^}]*\}\ (.*)$ ]] && line="${BASH_REMATCH[1]}"
   case "$tag" in
     keep:*) grep -q "^${tag} " "$out" || { echo "missing: ${tag}"; bad=1; } ;;
     same:*) grep -qxF "${tag} ${line}" "$out" || { echo "changed: ${tag} -> $(grep "^${tag} " "$out" || echo '(missing)')"; bad=1; } ;;
@@ -80,5 +128,13 @@ while IFS= read -r pattern; do
     bad=1
   fi
 done <"$forbidden"
+if [[ -f "$metrics" ]]; then
+  curl -fsS "http://127.0.0.1:${port}/metrics" >"${work}/metrics.txt" || fail "alloy served no /metrics"
+  [[ -z "${SCRUB_SHOW:-}" ]] || grep -E '^loki_process_(custom_|dropped_lines_total)' "${work}/metrics.txt"
+  while IFS= read -r pattern; do
+    [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+    grep -qE -- "$pattern" "${work}/metrics.txt" || { echo "no metric matches /${pattern}/"; bad=1; }
+  done <"$metrics"
+fi
 [[ "$bad" -eq 0 ]] || fail "$(basename "$config") ships what it shouldn't (above)"
 echo "scrub check: $(basename "$config"): $(wc -l <"$out") of $(wc -l <"$fixture") lines out, all scrubbed"
