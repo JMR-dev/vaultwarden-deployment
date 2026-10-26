@@ -13,7 +13,9 @@ buckets, the Resend mail domain, Artifact Registry, every IAM grant) and
 its data disk, snapshots). Gitea Actions deploys with a deployer SA key —
 Gitea 1.27 can't mint Actions OIDC tokens — and that SA can rebuild the VM
 but can't grant IAM. Ansible configures the host over IAP + OS Login; there
-is no public SSH and no WireGuard.
+is no public SSH. The one WireGuard tunnel goes out, not in: each VM is a
+write-only agent peer of watchtower, the owner's observability stack, and
+ships its logs (drop-by-default) and metrics there (§6, "Telemetry").
 
 Steps marked ⚠ change real resources. Read the preview/diff before applying.
 
@@ -291,7 +293,9 @@ its R2 bucket. The first cycle is §2.8 plus §3; later ones are just this.
    parameters").
 2. ⚠ Dispatch deploy: `stack=disposable`, from the branch under test, with
    `signups=true` on a fresh VM, then once more with `signups=false`.
-3. Test. Its Healthchecks checks resume on their first ping.
+3. Test. Its Healthchecks checks resume on their first ping. It ships its
+   telemetry to watchtower with its own peer, as `env="disposable"`, and
+   stays out of watchtower's alerts (§6, "Telemetry").
 
 **End**
 
@@ -398,8 +402,9 @@ Caddy's access log must show the same address:
 
 If either shows an internal address (`10.89.0.x`), Caddy isn't getting its
 listeners from `caddy.socket`, and rootless Podman's port forwarder is
-hiding client IPs. A `PublishPort=` crept back into
-`quadlets/caddy.container.j2`, or the socket isn't active. Three
+hiding client IPs. A `PublishPort=` for 443 crept back into
+`quadlets/caddy.container.j2` (the only one there is the metrics site's,
+on loopback), or the socket isn't active. Three
 consequences:
 - fail2ban can't ban anyone;
 - `/admin` stays 404 even through the IAP tunnel (it fails closed);
@@ -565,6 +570,55 @@ sudo tail /var/lib/vaultwarden/caddy/logs/coraza-audit.log
   ```
   `platform/main_test.go` enforces the same allow-list on every CI run.
 
+### 3.12 Telemetry reaches watchtower, and nothing personal does
+
+Nothing on watchtower scrubs: what this host sends is stored. Check on
+disposable first, over its first hour of real traffic; any hit blocks the
+production deploy. The queries are watchtower's (its
+`docs/client-telemetry.md`, "Verification").
+
+The deploy already warns when Alloy isn't ready or the tunnel has no
+handshake within 2 minutes. On the host:
+
+```sh
+gcloud compute ssh vault-disposable --zone us-east1-b --tunnel-through-iap
+# A recent epoch, not 0 (only column 2: column 1 is watchtower's public key):
+sudo wg show wg-watchtower latest-handshakes | awk '{print $2}'
+curl -fsS http://127.0.0.1:12345/-/ready
+curl -fsS http://127.0.0.1:2020/metrics | grep -c '^caddy_'   # loopback only
+sudo nft list chain inet vaultwarden_filter input | grep wg-watchtower
+```
+
+Then make the lines that must not leak:
+
+1. On the web vault, fail a login with a made-up email
+   (`nobody-<today>@example.com`).
+2. Type a made-up "password" (`not-a-password-<today>`) into the email
+   field, and fail again.
+
+In Grafana Explore (`Loki (jasonmross)`, `Mimir (jasonmross)`), with
+`H` = `vault-disposable`:
+
+- `{host="H"} |= "nobody-"` and `{host="H"} |= "not-a-password"`: nothing.
+- `{host="H"} |= "Username:"` and `{host="H"} |= "IP: "`: nothing.
+- `loki_process_custom_vaultwarden_failed_logins{host="H"}` rose by 2.
+- `sum by (unit, container) (count_over_time({host="H"}[1h]))`: only units
+  `alloy/config.alloy` allows (its `not_allowed` rule).
+- `count by (job) (up{host="H"})`: `integrations/unix`, `alloy`, `caddy`
+  and `blackbox`, all 1.
+- None of these find anything:
+  ```
+  {host="H"} |~ "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
+  {host="H"} |~ "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[a-z]{2,}"
+  {host="H"} |= "eyJ"
+  {host="H"} |= "\"transaction\""
+  {host="H"} |~ "(?i)\"(cookie|authorization)\""
+  {host="H"} |~ "_(gmail|googlemail)_com"
+  ```
+  Expect systemd's template unit names in the lines that do ship
+  (`wg-quick@wg-watchtower.service`) as `[REDACTED-EMAIL]`: the scrub takes
+  them for addresses.
+
 ---
 
 ## 4. Production deploy
@@ -589,7 +643,8 @@ instance refuses API deletion). Prerequisites from §2 that are per stack:
    only your account.
 4. Run the production-safe subset of §3: 3.2, 3.3, 3.4, 3.6 (backup run;
    the restore drill uses production's repo), 3.7 (email + Healthchecks),
-   3.11 deployer listing. Skip the destructive ones (3.1, the 3.9 umount).
+   3.11 deployer listing, 3.12 with `H` = `vault-production`. Skip the
+   destructive ones (3.1, the 3.9 umount).
 
 ---
 
@@ -754,6 +809,57 @@ Two long-lived keys exist. Rotate both on the same calendar reminder:
 
 disposable exists only during a test cycle. To bring it up and take it down
 again, see §2.9.
+
+### Telemetry (watchtower)
+
+Each VM ships to watchtower (the `watchtower-observability-stack` repo;
+its `docs/client-telemetry.md` is the contract), through a WireGuard tunnel
+that only goes out:
+
+- **The tunnel** (`ansible/roles/tunnel`): `wg-quick@wg-watchtower`, a
+  split tunnel to 10.8.0.0/24 only. The deploy reads the peer config from
+  `watchtower-observe/wireguard-vaultwarden-<stack>-peer` as the deployer
+  (never printed), refuses one with hooks or more routes (that does fail
+  the deploy), and drops `DNS =`.
+  nftables drops anything that comes in on it.
+- **Alloy** (`ansible/roles/logship`): `alloy.service`, a release binary
+  pinned by sha256, as user `alloy` (group `systemd-journal`), sandboxed
+  away from `/data`, the rootless user's home (Caddy's access and audit
+  logs) and msmtp's log. 256 MiB cap; UI on `127.0.0.1:12345` only.
+- **What ships** is `alloy/config.alloy`: drop-by-default. From the
+  journal only failed logins and 2FA failures (IP and the whole username
+  field cut), Vaultwarden's start banner and systemd's start/stop lines;
+  backup, restic, dnf, podman-auto-update, the tunnel and Alloy; sshd and
+  sudo with user fields cut. Caddy's, the WAF's and fail2ban's lines are
+  only counted, then dropped. Metrics: host (unix, systemd), Alloy's own,
+  Caddy's (`127.0.0.1:2020`), and a probe of `https://<vault>/alive`. Labels
+  `service="vaultwarden"`, `host`, `env` (the stack).
+
+```sh
+sudo systemctl status wg-quick@wg-watchtower alloy
+sudo journalctl -u alloy -n 50
+sudo wg show wg-watchtower latest-handshakes | awk '{print $2}'   # column 1 is a key
+```
+
+- **No peer** (the secret missing, empty or unreadable): the deploy warns
+  and removes the tunnel and Alloy; it never fails over telemetry. Neither
+  does a tunnel or an Alloy that won't start: warnings in the `configure`
+  job, and root gets mail (`OnFailure=`).
+- **Off**: `observability_enabled: false` in `ansible/inventory/<stack>.yml`,
+  then deploy. Both roles remove what they installed (the `alloy` user
+  stays).
+- **Rekey**: delete the client in wg-easy; watchtower's next deploy
+  publishes a new config, and this stack's next deploy picks it up.
+- **Change what ships**: edit the rules between the scrub markers in
+  `alloy/config.alloy`, and add made-up, real-shaped lines to
+  `alloy/testdata/scrub.log` (`keep:`, `same:`, `drop:`, with the labels the
+  journal would give them), patterns that must never ship to
+  `scrub.forbidden`, and counters to `scrub.metrics`. CI runs
+  `scripts/check-alloy-scrub.sh` (locally: `alloy`, `jq` and `curl`), plus
+  `alloy fmt --test` and `alloy validate`.
+- **Bump Alloy**: `alloy_version` and `alloy_zip_sha256` (the release's
+  `SHA256SUMS`, `alloy-linux-amd64.zip`) in `ansible/group_vars/all.yml`;
+  CI tests with the same pin.
 
 ---
 
@@ -980,6 +1086,30 @@ sudo -u vaultwarden XDG_RUNTIME_DIR=/run/user/1100 podman auto-update --rollback
 Then investigate why — usually a broken `:<stack>` push or a config
 incompatibility with a new upstream version.
 
+### No telemetry from a host
+
+The `configure` job's warnings say which part: no peer, the tunnel, Alloy
+not ready, or no handshake.
+
+- **No peer**: the secret is missing, empty, or the deployer can't read
+  it. The owner checks without reading it:
+  `gcloud secrets versions list wireguard-vaultwarden-<stack>-peer --project watchtower-observe`.
+  Then deploy again.
+- **Refused** (the deploy failed at "The peer config routes the tunnel
+  range only, and runs nothing", its output hidden): the published config
+  has hooks, routes other than 10.8.0.0/24, or not exactly one peer, and
+  none of it reached the host. watchtower's deploy pins the agent's
+  settings and refuses to publish anything else, so treat it as tampering
+  until shown otherwise: look at client `vaultwarden-<stack>` in wg-easy,
+  never by printing the secret. Meanwhile, to deploy without telemetry:
+  `observability_enabled: false` (§6, "Telemetry", **Off**).
+- **No handshake**: `sudo journalctl -u wg-quick@wg-watchtower`. The tunnel
+  dials watchtower's proxy over UDP; egress is open here, so look at the
+  proxy (watchtower's runbook, "WireGuard peers").
+- **Alloy**: `sudo journalctl -u alloy`. Shipping errors there name the
+  endpoint; `curl -fsS http://127.0.0.1:12345/-/ready` on the host. An
+  SELinux denial would show in `sudo ausearch -m avc -ts recent`.
+
 ---
 
 ## 10. Where things live
@@ -1019,6 +1149,10 @@ incompatibility with a new upstream version.
 | `dnf-automatic-install.timer`                          | OS security updates |
 | `podman-auto-update.timer` (user)                      | container updates (rootless) |
 | `vaultwarden-container-watch.timer`                    | system timer, every 2 min: container-down alerting |
+| `/etc/wireguard/wg-watchtower.conf`, `wg-quick@wg-watchtower.service` | the outbound tunnel to watchtower (root 0600; peer config from `watchtower-observe`) |
+| `/usr/local/bin/alloy` → `alloy-<version>`, `alloy.service` | Grafana Alloy, telemetry to watchtower (user `alloy`, sandboxed) |
+| `/etc/alloy/config.alloy`, `/etc/alloy/alloy.env`      | what ships (from `alloy/config.alloy`), and the per-host values |
+| `/var/lib/alloy/`                                      | Alloy's journal position and remote-write WAL |
 
 ### In GCP / Cloudflare / Gitea
 
@@ -1028,6 +1162,7 @@ incompatibility with a new upstream version.
 | App state | `gs://vaultwarden-497422-pulumi-state` (deployer: objectAdmin) |
 | Pulumi secrets key | KMS `projects/vaultwarden-497422/locations/global/keyRings/pulumi/cryptoKeys/stacks` |
 | Secrets | Secret Manager, names in `secrets/secret-names.txt` |
+| Telemetry peers | `wireguard-vaultwarden-<stack>-peer` in project `watchtower-observe`, made by watchtower's deploy, readable by the deployer only |
 | Caddy image | `us-east1-docker.pkg.dev/vaultwarden-497422/vaultwarden/caddy:{<sha>,disposable,production}` |
 | VMs / disks | `vault-<stack>` / `vault-<stack>-data` in us-east1-b; snapshots `vault-<stack>-daily-snapshots` |
 | Addresses + DNS | `vault-<stack>-ipv4/-ipv6`; A/AAAA in zone `vault` (platform/) |

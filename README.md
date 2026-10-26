@@ -13,10 +13,11 @@ Operator guide: [`runbook/README.md`](runbook/README.md).
 |---|---|
 | `platform/` | Pulumi (Go), **owner-run**: VPC + firewall, static IPs, DNS records, R2 buckets, Artifact Registry, the CI deployer SA and every IAM grant |
 | `pulumi/` | Pulumi (Go), **CI-run**: the VM, its data disk and daily snapshots, per stack (`disposable`, `production`) |
-| `ansible/` | Host config: data disk + swap, Podman, msmtp, nftables, fail2ban, dnf-automatic, Secret Manager → Podman secrets, quadlets, backups |
+| `ansible/` | Host config: data disk + swap, Podman, msmtp, nftables, fail2ban, dnf-automatic, Secret Manager → Podman secrets, quadlets, backups, telemetry (WireGuard tunnel + Alloy) |
 | `quadlets/` | Rootless Vaultwarden + Caddy quadlet units |
 | `caddy/` | Custom Caddy build (Containerfile + pinned versions) and the Caddyfile |
 | `backup/` | SQLite snapshot + restic + systemd timers + Healthchecks pings |
+| `alloy/` | Grafana Alloy config: what ships to watchtower (drop-by-default, scrubbed), and the scrub's test fixture |
 | `scripts/` | `bootstrap-gcp.sh` (one-time), `ansible-iap.sh` (run Ansible over IAP), `build-caddy.sh` (build + Trivy), `rotate-deployer-key.sh` |
 | `.gitea/` | `ci.yml` (checks, no secrets), `deploy.yml` (image → Pulumi → Ansible), shared setup action |
 | `secrets/` | `secret-names.txt` + schemas. Values live in Google Cloud Secret Manager only |
@@ -40,6 +41,7 @@ Operator guide: [`runbook/README.md`](runbook/README.md).
 | Backups | restic → Cloudflare R2 (per-stack bucket), plus daily GCE disk snapshots |
 | DNS | GCP Cloud DNS (zone `vault`, delegated from jasonrossmedia.com) |
 | Alerting | Healthchecks.io (timer pings) + msmtp email via Resend (`systemd OnFailure=`, daily fail2ban ban digest) |
+| Telemetry | Grafana Alloy (host binary, sandboxed) → watchtower over an outbound-only WireGuard tunnel: allow-listed, scrubbed journal lines and host, Caddy and probe metrics |
 
 ## Build-it-disposably-first
 
