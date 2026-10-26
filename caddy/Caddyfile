@@ -30,6 +30,19 @@
     # Required for Coraza to plug into the request pipeline before
     # reverse_proxy. See coraza-caddy README.
     order coraza_waf first
+
+    # Prometheus metrics for the HTTP servers too, served by the :2020 site
+    # below. Labelled by server, handler, method and status: no hosts, paths
+    # or clients.
+    metrics
+}
+
+# Metrics for the host's Alloy (ansible/roles/logship), plain HTTP. The host
+# publishes it on 127.0.0.1:2020 only (caddy.container.j2); inside, it's on
+# the container's bridge address too. Caddy's admin API (:2019) stays
+# unpublished.
+:2020 {
+    metrics
 }
 
 {$VAULT_FQDN} {
