@@ -70,6 +70,7 @@ jobs:
           alloy fmt --test alloy/config.alloy || { echo "alloy fmt needed: alloy fmt -w alloy/config.alloy"; exit 1; }
           alloy validate alloy/config.alloy
           scripts/check-alloy-scrub.sh alloy/config.alloy alloy/testdata/scrub.log
+          scripts/check-alloy-scrub.sh alloy/config.alloy alloy/testdata/shared.log
 
   shell:
     runs-on: ubuntu-latest

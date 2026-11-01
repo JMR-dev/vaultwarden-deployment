@@ -64,3 +64,4 @@ BECOME-SUCCESS
 command continued
 service_account
 dummyKEY
+COMMAND=[^[]

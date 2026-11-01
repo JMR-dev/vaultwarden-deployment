@@ -14,7 +14,7 @@ keep:13 {unit=alloy.service level=info} card 4111111111111111 and 5500-0000-0000
 keep:14 {unit=alloy.service level=info} cipher 3f2504e0-4f89-41d3-9a0c-0305e82c3301 for user 7c9e6679-7425-40de-944b-e07fc1f90ae7
 keep:15 {unit=alloy.service level=info} jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl here # nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
 drop:16 {unit=alloy.service level=info} {"transaction":{"client_ip":"192.0.2.66","request":{"headers":{"cookie":["x"]}}}}
-drop:17 {unit=alloy.service level=info} config dump: cvv=123 ssn: 078051120
+keep:17 {unit=alloy.service level=info} config dump: cvv=123 ssn: 078051120
 keep:20 {unit=alloy.service level=info} env DB_PASSWORD=fakeLEAK20 POSTGRES_PASSWORD=fakeLEAK21 SMTP_PASSWORD=fakeLEAK22
 keep:21 {unit=alloy.service level=info} {"db_password":"fakeLEAK23","smtp_password":"fakeLEAK24"}
 keep:22 {unit=alloy.service level=info} login password="fakeLEAK25" user=bob
@@ -111,6 +111,14 @@ keep:135 {unit=sshd.service level=info} Close session: user deployer_tester from
 keep:136 {unit=sudo level=err} pam_unix(sudo:auth): auth could not identify password for [deployer_tester]
 keep:137 {unit=sudo level=notice} pam_unix(sudo:auth): authentication failure; logname=deployer_tester uid=1000 euid=0 tty=/dev/pts/0 ruser=deployer_tester rhost=  user=deployer_tester
 keep:138 {unit=sudo level=alert} deployer_tester : user NOT in sudoers ; TTY=pts/0 ; PWD=/var/lib/x ; USER=root ; COMMAND=/bin/ls
+keep:150 {unit=sudo level=notice} deployer_tester : TTY=pts/0 ; PWD=/home/deployer_tester ; USER=root ; COMMAND=/usr/bin/curl -u mallory:hunter6 https://example.net/
+keep:151 {unit=vaultwarden-backup.service level=notice} root : TTY=unknown ; PWD=/ ; USER=root ; COMMAND=/usr/bin/mysql -pfakeLEAK70 vault
+drop:154 {unit=alloy.service level=info} nft-drop: IN=eth0 OUT= SRC=192.0.2.200 DST=10.30.0.2 PROTO=TCP DPT=8080
+drop:155 {unit=vaultwarden.service container=vaultwarden level=info} |                  Version 1.35.1.mybank-private.example                  |
+keep:156 {unit=sudo level=info} pam_unix(sudo:session): session opened for user root(uid=0) by deployer_tester(uid=1000)
+keep:157 {unit=sshd.service level=notice} pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=35.235.240.4  user=my typed secret
+drop:158 {unit=alloy.service container=caddy level=err} name":"mallory.tester@example.net"}},"status":400}
+keep:152 {unit=sshd.service level=info} Found matching ED25519 key: SHA256:fakeLEAK72AAAAAAAAAAAAAAAAAAAA
 drop:140 {unit=sudo level=notice} deployer_tester : TTY=unknown ; PWD=/home/deployer_tester ; USER=vaultwarden ; COMMAND=/bin/sh -c 'echo BECOME-SUCCESS-abcdefghijklmnopqrstuvwxyzabcdef ; XDG_RUNTIME_DIR=/run/user/1100 SECRET_NAME=gcp-sa-dns SECRET_VALUE=\'{#012  "type": "service_account",#012  "project_id": "made-up-project",#012  "private_key_id": "fakeKEYID0000",#012  "private_key":
 drop:141 {unit=sudo level=notice} deployer_tester : (command continued) "fakeBEGIN\\nfakePEMline0000AAAAAAAAAAAAAAAAAAAAAAAA\\nfakePEMline0001AAAAAAAAAAAAAAAAAAAAAAAA\\nfakePEMline0002AAAAAAAAAAAAAAAAAAAAAAAA
 drop:142 {unit=sudo level=notice} deployer_tester : (command continued) AAAAAAAAAAAA\\nfakePEMline0014AAAAAAAAAAAAAAAAAAAAAAAA\\nfakeEND\\n",#012  "client_email": "fake-dns@made-up-project.iam.gserviceaccount.com",#012}\' /usr/bin/python3'
@@ -119,8 +127,8 @@ drop:144 {unit=sudo level=notice} deployer_tester : (command continued) "fakeBEG
 drop:145 {unit=sudo level=notice} deployer_tester : TTY=unknown ; PWD=/home/deployer_tester ; USER=vaultwarden ; COMMAND=/bin/sh -c 'echo BECOME-SUCCESS-abcdefghijklmnopqrstuvwxyzabcdef ; XDG_RUNTIME_DIR=/run/user/1100 SECRET_NAME=vaultwarden-admin-token SECRET_VALUE=\'$argon2id$v=19$m=65540,t=3,p=4$fakeSALTfakeARGON$fakeHASHfakeARGON\' /usr/bin/python3'
 drop:146 {unit=sudo level=notice} deployer_tester : TTY=unknown ; PWD=/home/deployer_tester ; USER=vaultwarden ; COMMAND=/bin/sh -c 'echo BECOME-SUCCESS-abcdefghijklmnopqrstuvwxyzabcdef ; XDG_RUNTIME_DIR=/run/user/1100 SECRET_NAME=gcp-sa-dns /usr/bin/python3'
 drop:147 {unit=sudo level=notice} deployer_tester : (command continued) fakePEMline0099 ; TTY=pts/0 ; PWD=/tmp ; USER=root ; COMMAND=/bin/true
-drop:148 {unit=wg-quick@wg-watchtower.service level=info} Key is not the correct length or format: `dummyKEYdummyKEYdummyKEY'
-drop:149 {unit=wg-quick@wg-watchtower.service level=info} Line unrecognized: `PrivateKey=dummyKEYdummyKEYdummyKEY'
+keep:148 {unit=wg-quick@wg-watchtower.service level=info} Key is not the correct length or format: `dummyKEYdummyKEYdummyKEY'
+keep:149 {unit=wg-quick@wg-watchtower.service level=info} Line unrecognized: `PrivateKey=dummyKEYdummyKEYdummyKEY'
 drop:95 {unit=session-7.scope level=info} ansible-ansible.legacy.command Invoked with _raw_params=cat /etc/vaultwarden/restic.env
 drop:96 {unit=systemd-logind.service level=info} New session 7 of user fixture_user99_gmail_com.
 drop:97 {unit=fail2ban-digest.service level=info} mailed 3 bans: 198.51.100.23 203.0.113.9 192.0.2.66
