@@ -81,6 +81,46 @@ keep:91 {unit=sshd.service level=notice} pam_unix(sshd:auth): authentication fai
 keep:92 {unit=sudo level=notice} fixture_user99_gmail_com : TTY=pts/0 ; PWD=/home/fixture_user99_gmail_com ; USER=root ; COMMAND=/usr/bin/systemctl status alloy
 keep:93 {unit=sudo level=info} pam_unix(sudo:session): session opened for user root(uid=0) by sa_1093876543210(uid=0)
 keep:94 {unit=sudo level=alert} mallory_corp : 3 incorrect password attempts ; TTY=pts/1 ; PWD=/home/mallory_corp ; USER=root ; COMMAND=/bin/cat /etc/shadow
+keep:108 {unit=vaultwarden.service container=vaultwarden level=err} [2026-10-26 14:06:10.120][vaultwarden::api::admin][ERROR] Invalid admin token. IP: 192.0.2.44
+keep:109 {unit=vaultwarden.service container=vaultwarden level=info} [2026-10-26 14:06:10.300][vaultwarden::api::core::two_factor::email][ERROR] Token is invalid! IP: 203.0.113.77
+keep:110 {unit=vaultwarden.service container=vaultwarden level=info} [2026-10-26 14:06:10.500][vaultwarden::api::core::two_factor::email][ERROR] No token available! IP: 2001:db8:4f::9
+drop:111 {unit=vaultwarden.service container=vaultwarden level=err} Invalid TOTP code hunter4 tail of a split line
+drop:112 {unit=vaultwarden.service container=vaultwarden level=err} [vaultwarden::error][ERROR] Invalid admin token. IP: 192.0.2.44
+drop:113 {unit=vaultwarden.service container=vaultwarden level=err} [2026-10-26 14:06:11.000][vaultwarden::api::core::two_factor::authenticator][ERROR] Invalid TOTP code! Server time: 2026-10-26 14:03:05 UTC IP: 203.0.113.77 for mallory_person hunter3
+drop:114 {unit=vaultwarden.service container=vaultwarden level=err} Username or password is incorrect. Try again. hunter3
+drop:115 {unit=vaultwarden.service container=vaultwarden level=err} [2026-10-26 14:06:12.000][vaultwarden::api::admin][ERROR] Invalid admin token. IP: 192.0.2.44 Jason Q Public
+drop:116 {unit=vaultwarden.service container=vaultwarden level=err} [2026-10-26 14:06:13.000][Jason Q Public][ERROR] Invalid admin token. IP: 192.0.2.44
+drop:117 {unit=vaultwarden.service container=vaultwarden level=err} [2026-10-26 14:06:14.000][vaultwarden::api::identity][ERROR] Username or password is incorrect. Try again. hunter3 Jason Q Public
+drop:118 {unit=vaultwarden.service container=vaultwarden level=err} [2026-10-26 14:06:15.000][vaultwarden::error][ERROR] Invalid 2FA provided for name Jason Q Public
+keep:120 {unit=sshd.service level=err} error: maximum authentication attempts exceeded for deployer_tester from 35.235.240.4 port 40022 ssh2 [preauth]
+keep:121 {unit=sshd.service level=info} Disconnecting authenticating user deployer_tester 35.235.240.4 port 40022: Too many authentication failures [preauth]
+keep:122 {unit=sshd.service level=info} Disconnecting invalid user mallory_corp 35.235.240.4 port 40022: Too many authentication failures [preauth]
+keep:123 {unit=sshd.service level=info} User deployer_tester from 35.235.240.4 not allowed because not listed in AllowUsers
+keep:124 {unit=sshd.service level=info} User deployer_tester not allowed because shell /sbin/nologin does not exist
+keep:125 {unit=sshd.service level=info} Starting session: shell on pts/0 for deployer_tester from 35.235.241.17 port 52144 id 0
+keep:126 {unit=sshd.service level=info} Invalid user my typed secret from 35.235.240.4 port 40022
+keep:127 {unit=sshd.service level=info} Failed password for invalid user my typed secret from 35.235.240.4 port 40022 ssh2
+keep:128 {unit=sshd.service level=info} Connection closed by invalid user my typed secret 35.235.240.4 port 40022 [preauth]
+keep:129 {unit=sshd.service level=info} Invalid user  from 35.235.240.4 port 40022
+keep:130 {unit=sshd.service level=info} Accepted publickey for fixture_user99_gmail_com from 35.235.241.17 port 52144 ssh2: ED25519-CERT ID bob@example.com (serial 0) CA ED25519
+keep:131 {unit=sshd.service level=info} pam_oslogin_login(sshd:account): Organization user owner_example_org has login permission.
+keep:132 {unit=sshd.service level=info} pam_oslogin_admin(sudo:account): Granting sudo permissions to organization user owner_example_org.
+keep:133 {unit=sshd.service level=info} Connection reset by authenticating user deployer_tester 35.235.240.4 port 40022 [preauth]
+keep:134 {unit=sshd.service level=info} Received disconnect from 35.235.240.4 port 40022:11: hunter5 typed secret [preauth]
+keep:135 {unit=sshd.service level=info} Close session: user deployer_tester from 35.235.241.17 port 52144 id 0
+keep:136 {unit=sudo level=err} pam_unix(sudo:auth): auth could not identify password for [deployer_tester]
+keep:137 {unit=sudo level=notice} pam_unix(sudo:auth): authentication failure; logname=deployer_tester uid=1000 euid=0 tty=/dev/pts/0 ruser=deployer_tester rhost=  user=deployer_tester
+keep:138 {unit=sudo level=alert} deployer_tester : user NOT in sudoers ; TTY=pts/0 ; PWD=/var/lib/x ; USER=root ; COMMAND=/bin/ls
+drop:140 {unit=sudo level=notice} deployer_tester : TTY=unknown ; PWD=/home/deployer_tester ; USER=vaultwarden ; COMMAND=/bin/sh -c 'echo BECOME-SUCCESS-abcdefghijklmnopqrstuvwxyzabcdef ; XDG_RUNTIME_DIR=/run/user/1100 SECRET_NAME=gcp-sa-dns SECRET_VALUE=\'{#012  "type": "service_account",#012  "project_id": "made-up-project",#012  "private_key_id": "fakeKEYID0000",#012  "private_key":
+drop:141 {unit=sudo level=notice} deployer_tester : (command continued) "fakeBEGIN\\nfakePEMline0000AAAAAAAAAAAAAAAAAAAAAAAA\\nfakePEMline0001AAAAAAAAAAAAAAAAAAAAAAAA\\nfakePEMline0002AAAAAAAAAAAAAAAAAAAAAAAA
+drop:142 {unit=sudo level=notice} deployer_tester : (command continued) AAAAAAAAAAAA\\nfakePEMline0014AAAAAAAAAAAAAAAAAAAAAAAA\\nfakeEND\\n",#012  "client_email": "fake-dns@made-up-project.iam.gserviceaccount.com",#012}\' /usr/bin/python3'
+drop:143 {unit=sudo level=notice} deployer_tester : TTY=unknown ; PWD=/home/deployer_tester ; USER=vaultwarden ; COMMAND=/bin/sh -c echo BECOME-SUCCESS-abcdefghijklmnopqrstuvwxyzabcdef ; XDG_RUNTIME_DIR=/run/user/1100 SECRET_NAME=gcp-sa-dns SECRET_VALUE='{#012  "type": "service_account",#012  "project_id": "made-up-project",#012  "private_key_id": "fakeKEYID0000",#012  "private_key":
+drop:144 {unit=sudo level=notice} deployer_tester : (command continued) "fakeBEGIN\nfakePEMline0000AAAAAAAAAAAAAAAAAAAAAAAA\nfakePEMline0001AAAAAAAAAAAAAAAAAAAAAAAA\nfakePEMline0002AAAAAAAAAAAAAAAAAAAAAAAA
+drop:145 {unit=sudo level=notice} deployer_tester : TTY=unknown ; PWD=/home/deployer_tester ; USER=vaultwarden ; COMMAND=/bin/sh -c 'echo BECOME-SUCCESS-abcdefghijklmnopqrstuvwxyzabcdef ; XDG_RUNTIME_DIR=/run/user/1100 SECRET_NAME=vaultwarden-admin-token SECRET_VALUE=\'$argon2id$v=19$m=65540,t=3,p=4$fakeSALTfakeARGON$fakeHASHfakeARGON\' /usr/bin/python3'
+drop:146 {unit=sudo level=notice} deployer_tester : TTY=unknown ; PWD=/home/deployer_tester ; USER=vaultwarden ; COMMAND=/bin/sh -c 'echo BECOME-SUCCESS-abcdefghijklmnopqrstuvwxyzabcdef ; XDG_RUNTIME_DIR=/run/user/1100 SECRET_NAME=gcp-sa-dns /usr/bin/python3'
+drop:147 {unit=sudo level=notice} deployer_tester : (command continued) fakePEMline0099 ; TTY=pts/0 ; PWD=/tmp ; USER=root ; COMMAND=/bin/true
+drop:148 {unit=wg-quick@wg-watchtower.service level=info} Key is not the correct length or format: `dummyKEYdummyKEYdummyKEY'
+drop:149 {unit=wg-quick@wg-watchtower.service level=info} Line unrecognized: `PrivateKey=dummyKEYdummyKEYdummyKEY'
 drop:95 {unit=session-7.scope level=info} ansible-ansible.legacy.command Invoked with _raw_params=cat /etc/vaultwarden/restic.env
 drop:96 {unit=systemd-logind.service level=info} New session 7 of user fixture_user99_gmail_com.
 drop:97 {unit=fail2ban-digest.service level=info} mailed 3 bans: 198.51.100.23 203.0.113.9 192.0.2.66

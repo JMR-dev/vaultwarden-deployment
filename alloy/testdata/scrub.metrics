@@ -4,4 +4,4 @@
 ^loki_process_custom_caddy_waf_matches\{.*\} 1$
 ^loki_process_custom_fail2ban_bans\{.*\} 1$
 ^loki_process_custom_vaultwarden_failed_logins\{.*\} 2$
-^loki_process_custom_vaultwarden_failed_2fa\{.*\} 1$
+^loki_process_custom_vaultwarden_failed_2fa\{.*\} 3$

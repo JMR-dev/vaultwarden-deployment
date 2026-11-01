@@ -48,3 +48,19 @@ health_status
 New session
 Invoked with
 restic\.env
+hunter[0-9]
+Jason
+typed secret
+owner_example_org
+ED25519-CERT
+fakePEM
+fakeBEGIN
+fakeEND
+fakeKEYID
+fakeARGON
+argon2
+SECRET_VALUE
+BECOME-SUCCESS
+command continued
+service_account
+dummyKEY

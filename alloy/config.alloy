@@ -209,9 +209,13 @@ loki.process "scrub" {
 
 	// Vaultwarden itself: only failed logins, 2FA failures and its start
 	// banner. Its other lines can name the sites of saved logins (icon
-	// downloads) or carry what a client sent.
+	// downloads) or carry what a client sent. Each template is the whole line
+	// (src/api/identity.rs, core/two_factor, admin.rs; "[<time>][<module>]
+	// [ERROR] " is EXTENDED_LOGGING's prefix), so nothing can follow an allowed
+	// start: conmon's last piece of a padded username can begin however the
+	// client likes. The one free field, Username, is cut whole below.
 	stage.match {
-		selector            = `{unit="vaultwarden.service", container="vaultwarden"} !~ "^(?:\\[[^\\]]*\\])*\\s*(?:Username or password is incorrect\\. Try again\\.|Invalid TOTP code|Invalid 2FA provided|Invalid admin token)|^\\|\\s+(?:Starting Vaultwarden|Version [0-9][^|]*?)\\s+\\|$"`
+		selector            = `{unit="vaultwarden.service", container="vaultwarden"} !~ "^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\]\\[vaultwarden(?:::\\w+)*\\]\\[ERROR\\] (?:Username or password is incorrect\\. Try again\\. IP: \\S+ Username: .*\\.|Invalid TOTP code! Server time: \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2} UTC IP: \\S+|(?:No token available!|Token is invalid!) IP: \\S+|Invalid admin token\\. IP: \\S+)$|^\\|\\s+(?:Starting Vaultwarden|Version [0-9][^|]*?)\\s+\\|$"`
 		action              = "drop"
 		drop_counter_reason = "vaultwarden"
 	}
@@ -252,7 +256,7 @@ loki.process "scrub" {
 		}
 
 		stage.match {
-			selector = `{unit="vaultwarden.service"} |~ "Invalid TOTP code|Invalid 2FA provided"`
+			selector = `{unit="vaultwarden.service"} |~ "Invalid TOTP code|No token available!|Token is invalid!"`
 
 			stage.metrics {
 				metric.counter {
@@ -273,28 +277,71 @@ loki.process "scrub" {
 		drop_counter_reason = "vaultwarden"
 	}
 
+	// wg quotes a config line it can't parse, and that can be the peer's key.
+	stage.match {
+		selector            = `{unit="wg-quick@wg-watchtower.service"} |~ "Key is not the correct|Line unrecognized"`
+		action              = "drop"
+		drop_counter_reason = "wg_quick_config"
+	}
+
+	// sudo's own lines for Ansible and for long commands. "BECOME-SUCCESS" is
+	// the command line Ansible hands sudo, with the task's environment in it,
+	// and "(command continued)" is the rest of any command past 960 bytes,
+	// with no key name for a rule below to match. roles/secrets no longer puts
+	// a secret there, but a host deployed before that change has them in its
+	// journal, and this source reads 7 hours back when it first starts.
+	stage.match {
+		selector            = `{unit="sudo"} |~ "\\(command continued\\)|BECOME-SUCCESS"`
+		action              = "drop"
+		drop_counter_reason = "sudo_command"
+	}
+
 	// sshd and sudo: that someone logged in or ran a command ships; who, and
-	// with which key, doesn't. OS Login names are email addresses.
+	// with which key, doesn't. OS Login names are email addresses, and a name
+	// that failed can be anything typed at the prompt, a password with spaces
+	// in it included: where sshd logs one before its address, all of it goes.
 	stage.match {
 		selector = `{unit=~"sshd\\.service|sudo"}`
 
+		// pam_unix: "auth could not identify password for [<name>]".
 		stage.replace {
-			expression = `\b(?:for|from|by) (?:invalid |illegal |authenticating )?user ([^\s(]+)`
+			expression = `\bfor (\[[^\]]*\])`
+			replace    = "[REDACTED-USER]"
+		}
+
+		// Accepted, Failed, "maximum authentication attempts exceeded",
+		// "Starting session": "... for [invalid user ]<name> from <ip> port <n>".
+		stage.replace {
+			expression = `\bfor (.*) from \S+ port \d+`
 			replace    = "[REDACTED-USER]"
 		}
 
 		stage.replace {
-			expression = `\b(?:Accepted|Failed|Postponed) \S+ for ([^\s(]+) from\b`
+			expression = `\bInvalid user (.*) from \S+ port \d+`
 			replace    = "[REDACTED-USER]"
 		}
 
+		// "Connection closed by", "Disconnected from", "Disconnecting".
 		stage.replace {
-			expression = `\bInvalid user ([^\s(]+)`
+			expression = `\b(?:invalid|authenticating) user (.*) \S+ port \d+`
+			replace    = "[REDACTED-USER]"
+		}
+
+		// Any other "user <name>": "for user <name>(uid=", "from user <name>",
+		// "User <name> from" and "not allowed", "Organization user <name> has".
+		stage.replace {
+			expression = `(?i)\buser ([^\s(]+)`
 			replace    = "[REDACTED-USER]"
 		}
 
 		stage.replace {
 			expression = `\bby ([^\s(]+)\(uid=`
+			replace    = "[REDACTED-USER]"
+		}
+
+		// pam_unix ends its authentication failure with user=<name>.
+		stage.replace {
+			expression = `\buser=(.*)$`
 			replace    = "[REDACTED-USER]"
 		}
 
@@ -314,9 +361,21 @@ loki.process "scrub" {
 			replace    = "[REDACTED-PATH]"
 		}
 
+		// The key: "ssh2: ED25519 SHA256:…", or a certificate with its ID.
+		stage.replace {
+			expression = `\bssh2: (.*)$`
+			replace    = "[REDACTED-KEY]"
+		}
+
 		stage.replace {
 			expression = `\b(?:SHA256|MD5):([A-Za-z0-9+/=:]+)`
 			replace    = "[REDACTED-KEY]"
+		}
+
+		// Text the client chose to send as it left.
+		stage.replace {
+			expression = `\bReceived disconnect from \S+ port \d+:\d+: (.*)$`
+			replace    = "[REDACTED-TEXT]"
 		}
 	}
 
@@ -491,6 +550,12 @@ prometheus.exporter.unix "host" {
 	// the placeholder systemd mounts over it, not the data disk.
 	filesystem {
 		mount_points_exclude = "^/(data|dev|proc|run/credentials/.+|sys|var/lib/docker/.+)($|/)"
+	}
+
+	// user@<uid>.service would make each OS Login user's uid a label. Setting
+	// this replaces the default, so the second half keeps it.
+	systemd {
+		unit_exclude = "(user|user-runtime-dir)@.+\\.service|.+\\.(automount|device|mount|scope|slice)"
 	}
 }
 
