@@ -14,10 +14,10 @@
 # and its files removed, /var/lib/alloy with its queue and journal position. If
 # roles/tunnel couldn't read the peer for any reason but a missing or empty
 # secret, nothing here runs: Alloy goes on as it is, and the next deploy brings
-# any change. A deploy never fails over telemetry: a failed install
-# (GitHub down, a full disk), a config Alloy refuses, a bad start and the
-# checks at the end are all warnings. CI's alloy job is what stops a bad
-# config; on a host, the one already there keeps running.
+# any change. A deploy never fails over telemetry: a failed install (GitHub
+# down, a full disk), a config Alloy refuses, a bad start and the checks at the
+# end are all warnings. CI's alloy job is what stops a bad config; on a host,
+# the one already there keeps running.
 
 - name: Is there a tunnel
   ansible.builtin.stat:

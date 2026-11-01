@@ -590,6 +590,10 @@ sudo nft list chain inet vaultwarden_filter input | grep wg-watchtower
 # 0: no secret in sudo's lines since this deploy (a count, never the lines).
 # Above 0 on an older host means an earlier deploy: §9, "No telemetry from a host".
 sudo journalctl -t sudo --since "<this deploy's start>" -o cat | grep -c SECRET_VALUE
+# Alloy came up under its sandbox: active, and it hasn't been restarting.
+systemctl show alloy -p ActiveState -p NRestarts
+# As Alloy's user, in Alloy's own view of the disk: "Permission denied".
+sudo nsenter -t "$(systemctl show alloy -p MainPID --value)" -m -S "$(id -u alloy)" -G "$(id -g alloy)" ls /data
 ```
 
 Then make the lines that must not leak:
@@ -620,10 +624,8 @@ In Grafana Explore (`Loki (jasonmross)`, `Mimir (jasonmross)`), with
   {host="H"} |= "(command continued)"
   {host="H"} |= "BECOME-SUCCESS"
   {host="H"} |= "SECRET_VALUE"
+  {host="H"} |~ "COMMAND=[^\\[]"
   ```
-  Expect systemd's template unit names in the lines that do ship
-  (`wg-quick@wg-watchtower.service`) as `[REDACTED-EMAIL]`: the scrub takes
-  them for addresses.
 
 ---
 
@@ -836,8 +838,10 @@ that only goes out:
   journal only failed logins and 2FA failures (IP and the whole username
   field cut), Vaultwarden's start banner and systemd's start/stop lines;
   backup, restic, dnf, podman-auto-update, the tunnel and Alloy; sshd and
-  sudo with user fields cut, but none of sudo's lines for Ansible or for a
-  command past 960 bytes. Caddy's, the WAF's and fail2ban's lines are only
+  sudo with user fields cut and sudo's `COMMAND=` cut to the end of the line
+  (that someone ran sudo ships, what they ran stays in the journal), but none
+  of sudo's lines for Ansible or for a command past 960 bytes. Watchtower's
+  shared block then scrubs all of it. Caddy's, the WAF's and fail2ban's lines are only
   counted, then dropped. Metrics: host (unix, systemd), Alloy's own,
   Caddy's (`127.0.0.1:2020`), and a probe of `https://<vault>/alive`. Labels
   `service="vaultwarden"`, `host`, `env` (the stack).
@@ -848,9 +852,12 @@ sudo journalctl -u alloy -n 50
 sudo wg show wg-watchtower latest-handshakes | awk '{print $2}'   # column 1 is a key
 ```
 
-- **No peer** (the secret missing, empty or unreadable): the deploy warns
-  and removes the tunnel and Alloy; it never fails over telemetry. Neither
-  does a tunnel or an Alloy that won't start, or an install that fails (a
+- **No peer** (the secret missing or empty): the deploy warns and removes
+  the tunnel and Alloy, `/var/lib/alloy` included. **A failed read** (the
+  network, a 5xx, the token, `PERMISSION_DENIED`, a disabled version): the
+  deploy warns and changes nothing, so the tunnel and Alloy run on as they are,
+  and that deploy brings them no new config. It never fails over telemetry.
+  Neither does a tunnel or an Alloy that won't start, or an install that fails (a
   GitHub outage, a full disk, a config Alloy refuses, which CI's `alloy` job
   stops first): warnings in the `configure` job, and root gets mail
   (`OnFailure=`) for the first two. The one exception is a refused peer config.
@@ -864,13 +871,18 @@ sudo wg show wg-watchtower latest-handshakes | awk '{print $2}'   # column 1 is 
   stays).
 - **Rekey**: delete the client in wg-easy; watchtower's next deploy
   publishes a new config, and this stack's next deploy picks it up.
-- **Change what ships**: edit the rules between the scrub markers in
-  `alloy/config.alloy`, and add made-up, real-shaped lines to
-  `alloy/testdata/scrub.log` (`keep:`, `same:`, `drop:`, with the labels the
-  journal would give them), patterns that must never ship to
-  `scrub.forbidden`, and counters to `scrub.metrics`. CI runs
-  `scripts/check-alloy-scrub.sh` (locally: `alloy`, `jq` and `curl`), plus
-  `alloy fmt --test` and `alloy validate`.
+- **Revoke**: delete the client in wg-easy. A secret this deploy can't read
+  doesn't take the tunnel down.
+- **Change what ships**: edit this repo's rules, the first part of the block
+  between the scrub markers in `alloy/config.alloy`, and add made-up,
+  real-shaped lines to `alloy/testdata/scrub.log` (`keep:`, `same:`, `drop:`,
+  with the labels the journal would give them), patterns that must never ship
+  to `scrub.forbidden`, and counters to `scrub.metrics`. The rest of the block
+  is watchtower's shared one, unchanged: take a new version whole, with
+  `shared.log` and `shared.forbidden`, watchtower's fixture with each line given
+  `unit=alloy.service`. CI runs `scripts/check-alloy-scrub.sh` over both fixtures
+  (locally: `alloy`, `jq` and `curl`), plus `alloy fmt --test` and
+  `alloy validate`.
 - **Bump Alloy**: `alloy_version` and `alloy_zip_sha256` (the release's
   `SHA256SUMS`, `alloy-linux-amd64.zip`) in `ansible/group_vars/all.yml`;
   CI tests with the same pin.
@@ -1102,13 +1114,19 @@ incompatibility with a new upstream version.
 
 ### No telemetry from a host
 
-The `configure` job's warnings say which part: no peer, the tunnel, Alloy
-not ready, or no handshake.
+The `configure` job's warnings say which part: no peer, a failed read, the
+tunnel, Alloy not ready, or no handshake.
 
-- **No peer**: the secret is missing, empty, or the deployer can't read
-  it. The owner checks without reading it:
+- **No peer**: the secret is missing or empty, so the tunnel and Alloy are
+  gone. The owner checks without reading it:
   `gcloud secrets versions list wireguard-vaultwarden-<stack>-peer --project watchtower-observe`.
   Then deploy again.
+- **A failed read** (`... right now, so this deploy leaves the tunnel and
+  Alloy ... as they are`): the deploy couldn't tell. Whatever was running still
+  is, on its old config. On a host that never had a peer there's nothing to
+  leave, so this is the first thing to check: a deployer without access to a
+  secret that doesn't exist gets `PERMISSION_DENIED`, not `NOT_FOUND`. Same
+  check as above, then deploy again.
 - **Setup failed** (`WARNING: setting up … failed at "<task>"`): that task's
   error is above it in the job log, hidden if the task holds the peer. The next
   deploy tries again; a working tunnel or Alloy is left as it was.
@@ -1131,8 +1149,9 @@ not ready, or no handshake.
 - **A secret in sudo's lines** (§3.12's `SECRET_VALUE` count above 0): a deploy
   before the fix passed Podman secrets through `environment:`, and sudo logged
   them. The scrub drops those lines, so they don't ship, but they stay in the
-  host's journal, where members of `systemd-journal` can read them. Rotating
-  the keys and vacuuming the journal is the owner's call.
+  host's journal, where members of `systemd-journal` can read them. The owner
+  rotates the DNS key once the fix is in production (§6, "Key rotation").
+  Vacuuming the journal is the owner's call.
 
 ---
 
