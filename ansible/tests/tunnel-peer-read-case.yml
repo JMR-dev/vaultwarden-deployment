@@ -1,0 +1,19 @@
+---
+# One case of tunnel-peer.yml: a made-up read of the secret, and the state the
+# role takes from it.
+- name: Read "{{ tunnel_read_case.name }}"
+  ansible.builtin.set_fact:
+    tunnel_peer: "{{ tunnel_read_case.read }}"
+    observability_enabled: "{{ tunnel_read_case.observability | default(true) }}"
+  no_log: true
+
+- name: The state from "{{ tunnel_read_case.name }}"
+  ansible.builtin.import_tasks: ../roles/tunnel/tasks/peer-state.yml
+
+- name: The state is as expected for "{{ tunnel_read_case.name }}"
+  ansible.builtin.assert:
+    that:
+      - (tunnel_enabled | bool) == (tunnel_read_case.state == 'up')
+      - (tunnel_read_failed | bool) == (tunnel_read_case.state == 'leave')
+    fail_msg: "{{ tunnel_read_case.name }}: enabled {{ tunnel_enabled }}, read failed {{ tunnel_read_failed }}, wanted {{ tunnel_read_case.state }}"
+    quiet: true

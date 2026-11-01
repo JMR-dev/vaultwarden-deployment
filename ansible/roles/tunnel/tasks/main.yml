@@ -11,12 +11,13 @@
 # else). It never reaches a log: every task that holds it is no_log, and only
 # its rc and stderr are looked at in the open.
 #
-# No peer (the secret missing, empty or unreadable) or observability_enabled
-# false is a warning, never a failed deploy: the tunnel is stopped and its
-# config removed, and roles/logship does the same for Alloy. Neither is a
-# tunnel that won't come up, or a package or file task that fails here. A
-# config that fails tasks/check.yml is refused, and fails the deploy before
-# anything is written.
+# No peer (the secret missing or empty) or observability_enabled false is a
+# warning, never a failed deploy: the tunnel is stopped and its config removed,
+# and roles/logship does the same for Alloy. A read that fails for any other
+# reason is a warning too, and changes nothing: the tunnel and Alloy run on as
+# they are (tasks/peer-state.yml). Neither is a tunnel that won't come up, or a
+# package or file task that fails here. A config that fails tasks/check.yml is
+# refused, and fails the deploy before anything is written.
 
 - name: Read this stack's watchtower peer
   ansible.builtin.command:
@@ -38,16 +39,7 @@
   when: observability_enabled | default(false) | bool
 
 - name: Whether there is a peer
-  ansible.builtin.set_fact:
-    tunnel_enabled: >-
-      {{ (observability_enabled | default(false) | bool)
-         and tunnel_peer.rc | default(1) == 0
-         and tunnel_peer.stdout | default('') | trim | length > 0 }}
-    tunnel_peer_problem: >-
-      {{ 'empty' if tunnel_peer.rc | default(1) == 0
-         else 'not found' if 'NOT_FOUND' in tunnel_peer.stderr | default('')
-         else 'not readable by this identity' if 'PERMISSION_DENIED' in tunnel_peer.stderr | default('')
-         else 'unreadable' }}
+  ansible.builtin.import_tasks: peer-state.yml
 
 - name: No peer, no telemetry (a warning, not a failure)
   ansible.builtin.debug:
@@ -59,6 +51,16 @@
   when:
     - observability_enabled | default(false) | bool
     - not tunnel_enabled | bool
+    - not tunnel_read_failed | bool
+
+- name: A failed read changes nothing (a warning, not a failure)
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ watchtower_gcp_project }}/{{ watchtower_peer_secret }} is
+      {{ tunnel_peer_problem }} right now, so this deploy leaves the tunnel and
+      Alloy on {{ inventory_hostname }} as they are, if it has them. The next
+      deploy reads it again.
+  when: tunnel_read_failed | bool
 
 - name: The peer config is what watchtower publishes
   ansible.builtin.import_tasks: check.yml
@@ -166,7 +168,9 @@
         TUNNEL_IF: "{{ watchtower_tunnel_interface }}"
       register: tunnel_down
       changed_when: "'CHANGED' in tunnel_down.stdout"
-      when: not tunnel_enabled | bool
+      when:
+        - not tunnel_enabled | bool
+        - not tunnel_read_failed | bool
 
     - name: No peer, no stale config
       ansible.builtin.file:
@@ -175,7 +179,9 @@
       loop:
         - "/etc/wireguard/{{ watchtower_tunnel_interface }}.conf"
         - "/etc/systemd/system/wg-quick@{{ watchtower_tunnel_interface }}.service.d"
-      when: not tunnel_enabled | bool
+      when:
+        - not tunnel_enabled | bool
+        - not tunnel_read_failed | bool
       notify: reload systemd
   # Nothing from the failed task but its name: its result may hold the config.
   rescue:

@@ -58,6 +58,34 @@
       - {name: a spaced second peer, conf: "{{ tunnel_test_interface }}\n{{ tunnel_test_peer }}\n[ Peer ]\nPublicKey = dummy-other\nAllowed IPs = 0.0.0.0/0\n"}
       - {name: a spaced key, conf: "{{ tunnel_test_interface }}Post Up = touch /tmp/x\n\n{{ tunnel_test_peer }}"}
       - {name: FF before DNS, conf: "{{ tunnel_test_interface }}\fDNS = 192.0.2.53\n\n{{ tunnel_test_peer }}"}
+    # The role's three states from a read of the secret: up, down (no peer) and
+    # leave (nothing is known, so a running tunnel and Alloy stay as they are).
+    tunnel_test_reads:
+      - {name: a config, state: up, read: {rc: 0, stdout: "not checked here", stderr: ""}}
+      - {name: an empty secret, state: down, read: {rc: 0, stdout: "", stderr: ""}}
+      - {name: only a blank line, state: down, read: {rc: 0, stdout: " \n", stderr: ""}}
+      - name: a missing secret
+        state: down
+        read: {rc: 1, stdout: "", stderr: "ERROR: (gcloud.secrets.versions.access) NOT_FOUND: Secret [x] not found or has no versions."}
+      - name: permission denied
+        state: leave
+        read: {rc: 1, stdout: "", stderr: "ERROR: (gcloud.secrets.versions.access) PERMISSION_DENIED: Permission 'secretmanager.versions.access' denied."}
+      - name: a disabled version
+        state: leave
+        read: {rc: 1, stdout: "", stderr: "ERROR: (gcloud.secrets.versions.access) FAILED_PRECONDITION: Secret Version [x] is in DISABLED state."}
+      - name: a server error
+        state: leave
+        read: {rc: 1, stdout: "", stderr: "ERROR: (gcloud.secrets.versions.access) INTERNAL: Internal error encountered."}
+      - name: the network
+        state: leave
+        read: {rc: 1, stdout: "", stderr: "ERROR: gcloud crashed (TransportError): connection reset"}
+      - name: an expired token
+        state: leave
+        read: {rc: 1, stdout: "", stderr: "ERROR: (gcloud.secrets.versions.access) There was a problem refreshing your current auth tokens."}
+      - name: no gcloud at all
+        state: leave
+        read: {failed: true, msg: "[Errno 2] No such file or directory"}
+      - {name: telemetry off, state: down, observability: false, read: {skipped: true}}
   tasks:
     - name: Temp directory
       ansible.builtin.tempfile:
@@ -71,6 +99,13 @@
       loop_control:
         loop_var: tunnel_case
         label: "{{ tunnel_case.name }}"
+
+    - name: Each made-up read of the secret
+      ansible.builtin.include_tasks: tunnel-peer-read-case.yml
+      loop: "{{ tunnel_test_reads }}"
+      loop_control:
+        loop_var: tunnel_read_case
+        label: "{{ tunnel_read_case.name }}"
 
     - name: Remove the temp directory
       ansible.builtin.file:

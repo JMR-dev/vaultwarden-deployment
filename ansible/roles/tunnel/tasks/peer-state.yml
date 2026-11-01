@@ -1,0 +1,26 @@
+---
+# What the read of the peer's secret says, as three states. tunnel_enabled: a
+# peer to set up. tunnel_read_failed: nothing is known about the peer, so
+# nothing changes. Neither: no peer, so telemetry comes down.
+#
+# Only a secret that's gone or empty is no peer. Anything else (the network, a
+# 5xx, the token, PERMISSION_DENIED, a disabled version) says nothing about it,
+# and a blip mustn't stop a working tunnel or cost Alloy its queue and journal
+# position. Revoking a peer is deleting its client in wg-easy, not this.
+#
+# ansible/tests/tunnel-peer.yml runs this over made-up reads in CI.
+- name: What the read says about the peer
+  ansible.builtin.set_fact:
+    tunnel_enabled: >-
+      {{ (observability_enabled | default(false) | bool)
+         and tunnel_peer.rc | default(1) == 0
+         and tunnel_peer.stdout | default('') | trim | length > 0 }}
+    tunnel_read_failed: >-
+      {{ (observability_enabled | default(false) | bool)
+         and tunnel_peer.rc | default(1) != 0
+         and 'NOT_FOUND' not in tunnel_peer.stderr | default('') }}
+    tunnel_peer_problem: >-
+      {{ 'empty' if tunnel_peer.rc | default(1) == 0
+         else 'not found' if 'NOT_FOUND' in tunnel_peer.stderr | default('')
+         else 'not readable by this identity' if 'PERMISSION_DENIED' in tunnel_peer.stderr | default('')
+         else 'unreadable' }}

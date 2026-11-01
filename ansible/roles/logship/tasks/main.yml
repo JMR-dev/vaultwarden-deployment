@@ -11,7 +11,10 @@
 #
 # Alloy runs only while roles/tunnel has left a tunnel config on the host.
 # Without one (no peer), or with observability_enabled false, it is stopped
-# and its files removed. A deploy never fails over telemetry: a failed install
+# and its files removed, /var/lib/alloy with its queue and journal position. If
+# roles/tunnel couldn't read the peer for any reason but a missing or empty
+# secret, nothing here runs: Alloy goes on as it is, and the next deploy brings
+# any change. A deploy never fails over telemetry: a failed install
 # (GitHub down, a full disk), a config Alloy refuses, a bad start and the
 # checks at the end are all warnings. CI's alloy job is what stops a bad
 # config; on a host, the one already there keeps running.
@@ -27,6 +30,7 @@
     logship_enabled: "{{ (observability_enabled | default(false) | bool) and logship_tunnel_conf.stat.exists }}"
 
 - name: Alloy, or a warning if any of this fails
+  when: not tunnel_read_failed | default(false) | bool
   block:
     - name: Install and run Alloy
       ansible.builtin.import_tasks: present.yml
