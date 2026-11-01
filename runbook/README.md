@@ -587,6 +587,9 @@ sudo wg show wg-watchtower latest-handshakes | awk '{print $2}'
 curl -fsS http://127.0.0.1:12345/-/ready
 curl -fsS http://127.0.0.1:2020/metrics | grep -c '^caddy_'   # loopback only
 sudo nft list chain inet vaultwarden_filter input | grep wg-watchtower
+# 0: no secret in sudo's lines since this deploy (a count, never the lines).
+# Above 0 on an older host means an earlier deploy: §9, "No telemetry from a host".
+sudo journalctl -t sudo --since "<this deploy's start>" -o cat | grep -c SECRET_VALUE
 ```
 
 Then make the lines that must not leak:
@@ -614,6 +617,9 @@ In Grafana Explore (`Loki (jasonmross)`, `Mimir (jasonmross)`), with
   {host="H"} |= "\"transaction\""
   {host="H"} |~ "(?i)\"(cookie|authorization)\""
   {host="H"} |~ "_(gmail|googlemail)_com"
+  {host="H"} |= "(command continued)"
+  {host="H"} |= "BECOME-SUCCESS"
+  {host="H"} |= "SECRET_VALUE"
   ```
   Expect systemd's template unit names in the lines that do ship
   (`wg-quick@wg-watchtower.service`) as `[REDACTED-EMAIL]`: the scrub takes
@@ -819,9 +825,9 @@ that only goes out:
 - **The tunnel** (`ansible/roles/tunnel`): `wg-quick@wg-watchtower`, a
   split tunnel to 10.8.0.0/24 only. The deploy reads the peer config from
   `watchtower-observe/wireguard-vaultwarden-<stack>-peer` as the deployer
-  (never printed), refuses one with hooks or more routes (that does fail
-  the deploy), and drops `DNS =`.
-  nftables drops anything that comes in on it.
+  (never printed), refuses anything but what wg-easy writes for an agent
+  (that does fail the deploy; `ansible/tests/tunnel-peer.yml` tests it in CI),
+  and drops `DNS =`. nftables drops anything that comes in on it.
 - **Alloy** (`ansible/roles/logship`): `alloy.service`, a release binary
   pinned by sha256, as user `alloy` (group `systemd-journal`), sandboxed
   away from `/data`, the rootless user's home (Caddy's access and audit
@@ -830,8 +836,9 @@ that only goes out:
   journal only failed logins and 2FA failures (IP and the whole username
   field cut), Vaultwarden's start banner and systemd's start/stop lines;
   backup, restic, dnf, podman-auto-update, the tunnel and Alloy; sshd and
-  sudo with user fields cut. Caddy's, the WAF's and fail2ban's lines are
-  only counted, then dropped. Metrics: host (unix, systemd), Alloy's own,
+  sudo with user fields cut, but none of sudo's lines for Ansible or for a
+  command past 960 bytes. Caddy's, the WAF's and fail2ban's lines are only
+  counted, then dropped. Metrics: host (unix, systemd), Alloy's own,
   Caddy's (`127.0.0.1:2020`), and a probe of `https://<vault>/alive`. Labels
   `service="vaultwarden"`, `host`, `env` (the stack).
 
@@ -843,8 +850,15 @@ sudo wg show wg-watchtower latest-handshakes | awk '{print $2}'   # column 1 is 
 
 - **No peer** (the secret missing, empty or unreadable): the deploy warns
   and removes the tunnel and Alloy; it never fails over telemetry. Neither
-  does a tunnel or an Alloy that won't start: warnings in the `configure`
-  job, and root gets mail (`OnFailure=`).
+  does a tunnel or an Alloy that won't start, or an install that fails (a
+  GitHub outage, a full disk, a config Alloy refuses, which CI's `alloy` job
+  stops first): warnings in the `configure` job, and root gets mail
+  (`OnFailure=`) for the first two. The one exception is a refused peer config.
+- **Restarts**: the tunnel and Alloy have handlers of their own, which restart
+  nothing else. A dispatch at a new commit can still restart Caddy twice: once
+  for a changed Caddyfile or quadlet, on the old image, and again when
+  `podman auto-update` takes the `:<stack>` image the deploy just moved. That
+  step also restarts Vaultwarden if upstream's `:latest` moved.
 - **Off**: `observability_enabled: false` in `ansible/inventory/<stack>.yml`,
   then deploy. Both roles remove what they installed (the `alloy` user
   stays).
@@ -1095,11 +1109,16 @@ not ready, or no handshake.
   it. The owner checks without reading it:
   `gcloud secrets versions list wireguard-vaultwarden-<stack>-peer --project watchtower-observe`.
   Then deploy again.
+- **Setup failed** (`WARNING: setting up … failed at "<task>"`): that task's
+  error is above it in the job log, hidden if the task holds the peer. The next
+  deploy tries again; a working tunnel or Alloy is left as it was.
 - **Refused** (the deploy failed at "The peer config routes the tunnel
   range only, and runs nothing", its output hidden): the published config
-  has hooks, routes other than 10.8.0.0/24, or not exactly one peer, and
-  none of it reached the host. watchtower's deploy pins the agent's
-  settings and refuses to publish anything else, so treat it as tampering
+  has hooks, routes other than 10.8.0.0/24, not exactly one peer, an address
+  outside the tunnel, or any line or character wg-easy doesn't write (CRLF
+  line ends count), and none of it reached the host. watchtower's deploy
+  pins the agent's settings and refuses to publish anything else, so treat
+  it as tampering
   until shown otherwise: look at client `vaultwarden-<stack>` in wg-easy,
   never by printing the secret. Meanwhile, to deploy without telemetry:
   `observability_enabled: false` (§6, "Telemetry", **Off**).
@@ -1109,6 +1128,11 @@ not ready, or no handshake.
 - **Alloy**: `sudo journalctl -u alloy`. Shipping errors there name the
   endpoint; `curl -fsS http://127.0.0.1:12345/-/ready` on the host. An
   SELinux denial would show in `sudo ausearch -m avc -ts recent`.
+- **A secret in sudo's lines** (§3.12's `SECRET_VALUE` count above 0): a deploy
+  before the fix passed Podman secrets through `environment:`, and sudo logged
+  them. The scrub drops those lines, so they don't ship, but they stay in the
+  host's journal, where members of `systemd-journal` can read them. Rotating
+  the keys and vacuuming the journal is the owner's call.
 
 ---
 
