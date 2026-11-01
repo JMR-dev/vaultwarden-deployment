@@ -46,6 +46,10 @@
         checksum: "sha256:{{ alloy_zip_sha256 }}"
         mode: "0600"
         timeout: 120
+      register: logship_zip
+      until: logship_zip is succeeded
+      retries: 3
+      delay: 10
 
     - name: Unpack it
       ansible.builtin.unarchive:

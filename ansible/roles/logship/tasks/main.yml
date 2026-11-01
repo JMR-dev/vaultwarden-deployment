@@ -11,8 +11,10 @@
 #
 # Alloy runs only while roles/tunnel has left a tunnel config on the host.
 # Without one (no peer), or with observability_enabled false, it is stopped
-# and its files removed. A deploy never fails over telemetry: a bad start
-# and the checks at the end are warnings.
+# and its files removed. A deploy never fails over telemetry: a failed install
+# (GitHub down, a full disk), a config Alloy refuses, a bad start and the
+# checks at the end are all warnings. CI's alloy job is what stops a bad
+# config; on a host, the one already there keeps running.
 
 - name: Is there a tunnel
   ansible.builtin.stat:
@@ -24,10 +26,19 @@
   ansible.builtin.set_fact:
     logship_enabled: "{{ (observability_enabled | default(false) | bool) and logship_tunnel_conf.stat.exists }}"
 
-- name: Install and run Alloy
-  ansible.builtin.import_tasks: present.yml
-  when: logship_enabled | bool
+- name: Alloy, or a warning if any of this fails
+  block:
+    - name: Install and run Alloy
+      ansible.builtin.import_tasks: present.yml
+      when: logship_enabled | bool
 
-- name: Stop and remove Alloy
-  ansible.builtin.import_tasks: absent.yml
-  when: not logship_enabled | bool
+    - name: Stop and remove Alloy
+      ansible.builtin.import_tasks: absent.yml
+      when: not logship_enabled | bool
+  rescue:
+    - name: Warn when Alloy can't be set up
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: setting up Alloy failed at "{{ ansible_failed_task.name }}".
+          {{ inventory_hostname }} ships no new telemetry until a later deploy
+          gets past that; the deploy carries on.
