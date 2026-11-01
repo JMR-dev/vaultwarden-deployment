@@ -51,6 +51,9 @@ jobs:
             ansible-playbook -i "inventory/${stack}.yml" playbook.yml --syntax-check
           done
           ansible-lint
+      - name: The tunnel role's checks, over made-up peer configs
+        working-directory: ansible
+        run: ansible-playbook -i localhost, tests/tunnel-peer.yml
 
   alloy:
     # The telemetry config's format and validity, and its scrub run by Alloy

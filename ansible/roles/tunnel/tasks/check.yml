@@ -1,0 +1,34 @@
+---
+# The config runs here as root (wg-quick). watchtower's deploy already pins
+# the peer's settings and refuses to publish anything else; check again.
+# PostUp and the like are shell commands; Table, FwMark and more AllowedIPs
+# would route other traffic through watchtower, the metadata server's
+# included, taking the VM's credentials, image pulls and DNS-01 with it. An
+# Address outside the tunnel makes that address local here, with the same
+# effect on the metadata server's. watchtower pins Address to one /32.
+#
+# An allow-list, because wg and wg-quick read a line differently from a regex:
+# wg strips all whitespace inside a line and both ignore case, and only \n
+# ends a line here while str.splitlines() also splits on \r, \f, \x85 and more.
+# So only printable ASCII, tabs and newlines, then every line must be a
+# comment, a blank, a section or one of the keys wg-easy writes. That shuts out
+# `Allowed IPs`, `\fPostUp`, `# note\rPostUp` and `[peer]` in one go.
+# ansible/tests/tunnel-peer.yml runs this over made-up configs in CI.
+- name: The peer config routes the tunnel range only, and runs nothing
+  vars:
+    tunnel_allowed: >-
+      {{ tunnel_peer.stdout | regex_findall('(?im)^[ \t]*AllowedIPs[ \t]*=[ \t]*(.*?)[ \t]*$')
+         | map('replace', ' ', '') | join(',') }}
+    tunnel_host_prefix: "{{ watchtower_tunnel_cidr | regex_replace('0/24$', '') | regex_escape }}"
+  ansible.builtin.assert:
+    that:
+      - tunnel_peer.stdout is not search('[^\t\n -~]')
+      - tunnel_peer.stdout is not search('(?im)^(?![ \t]*(?:#.*|\[(?:Interface|Peer)\][ \t]*|(?:PrivateKey|Address|MTU|DNS|PublicKey|PresharedKey|AllowedIPs|Endpoint|PersistentKeepalive)[ \t]*=.*)?$)')
+      - tunnel_peer.stdout | regex_findall('(?im)^[ \t]*\[Interface\][ \t]*$') | length == 1
+      - tunnel_peer.stdout | regex_findall('(?im)^[ \t]*\[Peer\][ \t]*$') | length == 1
+      - tunnel_peer.stdout is search('(?im)^[ \t]*Endpoint[ \t]*=[ \t]*\S')
+      - tunnel_peer.stdout | regex_findall('(?im)^[ \t]*Address[ \t]*=') | length == 1
+      - tunnel_peer.stdout is search('(?im)^[ \t]*Address[ \t]*=[ \t]*' ~ tunnel_host_prefix ~ '[0-9]{1,3}/32[ \t]*$')
+      - tunnel_allowed == watchtower_tunnel_cidr
+    quiet: true
+  no_log: true

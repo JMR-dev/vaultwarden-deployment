@@ -9,12 +9,12 @@
 {% set tunnel_conf = tunnel_peer.stdout %}
 {% set tunnel_has_mtu = tunnel_conf is search('(?im)^[ \t]*MTU[ \t]*=') %}
 {% set tunnel_has_keepalive = tunnel_conf is search('(?im)^[ \t]*PersistentKeepalive[ \t]*=') %}
-{% for line in tunnel_conf.splitlines() if line is not match('(?i)[ \t]*DNS[ \t]*=') %}
+{% for line in tunnel_conf.split('\n') if line is not match('(?i)[ \t]*DNS[ \t]*=') %}
 {{ line }}
-{% if line is match('[ \t]*\\[Interface\\]') and not tunnel_has_mtu %}
+{% if line is match('(?i)[ \t]*\\[Interface\\]') and not tunnel_has_mtu %}
 MTU = {{ watchtower_tunnel_mtu }}
 {% endif %}
-{% if line is match('[ \t]*\\[Peer\\]') and not tunnel_has_keepalive %}
+{% if line is match('(?i)[ \t]*\\[Peer\\]') and not tunnel_has_keepalive %}
 PersistentKeepalive = {{ watchtower_tunnel_keepalive }}
 {% endif %}
 {% endfor %}

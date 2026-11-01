@@ -1,0 +1,58 @@
+---
+# One case of tunnel-peer.yml: the config arrives as the role's gcloud task's
+# stdout does.
+- name: Read "{{ tunnel_case.name }}"
+  ansible.builtin.command:
+    argv: [cat]
+    stdin: "{{ tunnel_case.conf }}"
+    stdin_add_newline: false
+  register: tunnel_peer
+  changed_when: false
+  no_log: true
+
+- name: Run the checks on "{{ tunnel_case.name }}"
+  block:
+    - name: The role's checks
+      ansible.builtin.import_tasks: ../roles/tunnel/tasks/check.yml
+
+    - name: They passed
+      ansible.builtin.set_fact:
+        tunnel_test_accepted: true
+  rescue:
+    - name: They refused
+      ansible.builtin.set_fact:
+        tunnel_test_accepted: false
+
+- name: The checks did as expected on "{{ tunnel_case.name }}"
+  ansible.builtin.assert:
+    that: tunnel_test_accepted == (tunnel_case.accept | default(false))
+    fail_msg: "{{ tunnel_case.name }}: {{ 'accepted' if tunnel_test_accepted else 'refused' }}, which it shouldn't be"
+    quiet: true
+
+- name: What an accepted config renders to
+  when: tunnel_test_accepted
+  block:
+    - name: The role's template
+      ansible.builtin.template:
+        src: ../roles/tunnel/templates/wg-watchtower.conf.j2
+        dest: "{{ tunnel_test_dir.path }}/rendered.conf"
+        mode: "0600"
+      no_log: true
+
+    - name: Read it back
+      ansible.builtin.slurp:
+        src: "{{ tunnel_test_dir.path }}/rendered.conf"
+      register: tunnel_test_rendered
+      no_log: true
+
+    - name: No DNS, and the MTU and keepalive once each, in the right sections
+      vars:
+        tunnel_test_conf: "{{ tunnel_test_rendered.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - tunnel_test_conf is not search('(?im)^[ \t]*DNS[ \t]*=')
+          - tunnel_test_conf | regex_findall('(?im)^[ \t]*MTU[ \t]*= 1380$') | length == 1
+          - tunnel_test_conf | regex_findall('(?im)^[ \t]*PersistentKeepalive[ \t]*= 25$') | length == 1
+          - tunnel_test_conf is search('(?is)\[Interface\].*MTU[ \t]*=.*\[Peer\].*PersistentKeepalive[ \t]*=')
+        fail_msg: "{{ tunnel_case.name }} didn't render as it should"
+        quiet: true

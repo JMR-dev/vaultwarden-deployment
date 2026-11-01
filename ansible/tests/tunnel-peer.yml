@@ -1,0 +1,78 @@
+---
+# roles/tunnel's checks and template over made-up peer configs: what wg-quick
+# would run or route must be refused, however it's spelled (see
+# roles/tunnel/tasks/check.yml). Every key here is a dummy. Runs on the local
+# machine in CI's ansible job, and touches nothing outside a temp directory.
+# Its "fatal" lines are the checks refusing, each rescued; a failure ends the
+# run:
+#
+#   cd ansible && ansible-playbook -i localhost, tests/tunnel-peer.yml
+- name: The tunnel role's checks refuse what they should
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    watchtower_tunnel_cidr: 10.8.0.0/24
+    watchtower_tunnel_mtu: 1380
+    watchtower_tunnel_keepalive: 25
+    watchtower_gcp_project: dummy-project
+    watchtower_peer_secret: dummy-secret
+    tunnel_test_interface: "[Interface]\nPrivateKey = dummy-private\nAddress = 10.8.0.132/32\nMTU = 1380\n"
+    tunnel_test_peer: "[Peer]\nPublicKey = dummy-public\nPresharedKey = dummy-preshared\nAllowedIPs = 10.8.0.0/24\nPersistentKeepalive = 25\nEndpoint = 192.0.2.1:51820\n"
+    tunnel_test_cases:
+      # What wg-easy writes for an agent, with and without the settings the
+      # template adds.
+      - {name: as published, accept: true, conf: "{{ tunnel_test_interface }}\n{{ tunnel_test_peer }}"}
+      - {name: a comment, accept: true, conf: "# Client: vaultwarden\n{{ tunnel_test_interface }}\n{{ tunnel_test_peer }}"}
+      - {name: lowercase sections, accept: true, conf: "[interface]\nPrivateKey = dummy-private\nAddress = 10.8.0.132/32\n\n[peer]\nPublicKey = dummy-public\nAllowedIPs = 10.8.0.0/24\nEndpoint = 192.0.2.1:51820\n"}
+      - {name: DNS to drop, accept: true, conf: "[Interface]\nPrivateKey = dummy-private\nAddress = 10.8.0.132/32\nDNS = 192.0.2.53\n\n{{ tunnel_test_peer }}"}
+      # Hooks and the rest, plainly.
+      - {name: PostUp, conf: "{{ tunnel_test_interface }}PostUp = touch /tmp/x\n\n{{ tunnel_test_peer }}"}
+      - {name: PreDown, conf: "{{ tunnel_test_interface }}PreDown = touch /tmp/x\n\n{{ tunnel_test_peer }}"}
+      - {name: Table, conf: "{{ tunnel_test_interface }}Table = off\n\n{{ tunnel_test_peer }}"}
+      - {name: FwMark, conf: "{{ tunnel_test_interface }}FwMark = 51820\n\n{{ tunnel_test_peer }}"}
+      - {name: SaveConfig, conf: "{{ tunnel_test_interface }}SaveConfig = true\n\n{{ tunnel_test_peer }}"}
+      - {name: ListenPort, conf: "{{ tunnel_test_interface }}ListenPort = 51820\n\n{{ tunnel_test_peer }}"}
+      - {name: full tunnel, conf: "{{ tunnel_test_interface }}\n[Peer]\nPublicKey = dummy-public\nAllowedIPs = 0.0.0.0/0\nEndpoint = 192.0.2.1:51820\n"}
+      - {name: an extra route, conf: "{{ tunnel_test_interface }}\n{{ tunnel_test_peer }}AllowedIPs = 0.0.0.0/0\n"}
+      - {name: a second peer, conf: "{{ tunnel_test_interface }}\n{{ tunnel_test_peer }}\n[Peer]\nPublicKey = dummy-other\n"}
+      - {name: no endpoint, conf: "{{ tunnel_test_interface }}\n[Peer]\nPublicKey = dummy-public\nAllowedIPs = 10.8.0.0/24\n"}
+      - {name: no peer section, conf: "{{ tunnel_test_interface }}"}
+      - {name: a wider address, conf: "[Interface]\nPrivateKey = dummy-private\nAddress = 10.8.0.132/1\n\n{{ tunnel_test_peer }}"}
+      - {name: an address outside the tunnel, conf: "[Interface]\nPrivateKey = dummy-private\nAddress = 169.254.169.254/32\n\n{{ tunnel_test_peer }}"}
+      - {name: a second address, conf: "{{ tunnel_test_interface }}Address = 192.0.2.9/1\n\n{{ tunnel_test_peer }}"}
+      # The same things spelled so a line-by-line regex misses them: line
+      # breaks that \n alone doesn't catch, and whitespace and case wg ignores.
+      # A config with \r in it is written out whole: templating it would turn
+      # the \r into \n, as Jinja does, and test something else.
+      - {name: CR in a comment, conf: "[Interface]\nPrivateKey = dummy-private\nAddress = 10.8.0.132/32\n# note\rPostUp = touch /tmp/x\n\n[Peer]\nPublicKey = dummy-public\nAllowedIPs = 10.8.0.0/24\nEndpoint = 192.0.2.1:51820\n"}
+      - {name: FF before PostUp, conf: "{{ tunnel_test_interface }}\fPostUp = touch /tmp/x\n\n{{ tunnel_test_peer }}"}
+      - {name: VT before PreUp, conf: "{{ tunnel_test_interface }}\vPreUp = touch /tmp/x\n\n{{ tunnel_test_peer }}"}
+      - {name: NEL in a comment, conf: "{{ tunnel_test_interface }}# note\x85PostUp = touch /tmp/x\n\n{{ tunnel_test_peer }}"}
+      - {name: LS in a comment, conf: "{{ tunnel_test_interface }}# note\u2028PostUp = touch /tmp/x\n\n{{ tunnel_test_peer }}"}
+      - {name: CR before Table, conf: "[Interface]\nPrivateKey = dummy-private\nAddress = 10.8.0.132/32\n# note\rTable = off\n\n[Peer]\nPublicKey = dummy-public\nAllowedIPs = 10.8.0.0/24\nEndpoint = 192.0.2.1:51820\n"}
+      - {name: CRLF line ends, conf: "[Interface]\r\nPrivateKey = dummy-private\r\nAddress = 10.8.0.132/32\r\n\r\n[Peer]\r\nPublicKey = dummy-public\r\nAllowedIPs = 10.8.0.0/24\r\nEndpoint = 192.0.2.1:51820\r\n"}
+      - {name: a space in Allowed IPs, conf: "{{ tunnel_test_interface }}\n{{ tunnel_test_peer }}Allowed IPs = 0.0.0.0/0\n"}
+      - {name: CR before AllowedIPs, conf: "[Interface]\nPrivateKey = dummy-private\nAddress = 10.8.0.132/32\n\n[Peer]\nPublicKey = dummy-public\nAllowedIPs = 10.8.0.0/24\nEndpoint = 192.0.2.1:51820\n# note\rAllowedIPs = 0.0.0.0/0\n"}
+      - {name: a lowercase second peer, conf: "{{ tunnel_test_interface }}\n{{ tunnel_test_peer }}\n[peer]\nPublicKey = dummy-other\n"}
+      - {name: a spaced second peer, conf: "{{ tunnel_test_interface }}\n{{ tunnel_test_peer }}\n[ Peer ]\nPublicKey = dummy-other\nAllowed IPs = 0.0.0.0/0\n"}
+      - {name: a spaced key, conf: "{{ tunnel_test_interface }}Post Up = touch /tmp/x\n\n{{ tunnel_test_peer }}"}
+      - {name: FF before DNS, conf: "{{ tunnel_test_interface }}\fDNS = 192.0.2.53\n\n{{ tunnel_test_peer }}"}
+  tasks:
+    - name: Temp directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: tunnel-peer.
+      register: tunnel_test_dir
+
+    - name: Each made-up config
+      ansible.builtin.include_tasks: tunnel-peer-case.yml
+      loop: "{{ tunnel_test_cases }}"
+      loop_control:
+        loop_var: tunnel_case
+        label: "{{ tunnel_case.name }}"
+
+    - name: Remove the temp directory
+      ansible.builtin.file:
+        path: "{{ tunnel_test_dir.path }}"
+        state: absent
