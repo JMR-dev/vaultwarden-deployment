@@ -323,8 +323,9 @@ loki.process "scrub" {
 
 		// Any other "user <name>": "for user <name>(uid=", "from user <name>",
 		// "User <name> from" and "not allowed", "Organization user <name> has".
+		// A lone ; is sudo's separator (USER=user ; ENV=x), no name: the shared cut needs it.
 		stage.replace {
-			expression = `(?i)\buser ([^\s(]+)`
+			expression = `(?i)\buser ([^\s(;][^\s(]*|;[^\s(]+)`
 			replace    = "[REDACTED-USER]"
 		}
 

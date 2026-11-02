@@ -112,6 +112,9 @@ keep:136 {unit=sudo level=err} pam_unix(sudo:auth): auth could not identify pass
 keep:137 {unit=sudo level=notice} pam_unix(sudo:auth): authentication failure; logname=deployer_tester uid=1000 euid=0 tty=/dev/pts/0 ruser=deployer_tester rhost=  user=deployer_tester
 keep:138 {unit=sudo level=alert} deployer_tester : user NOT in sudoers ; TTY=pts/0 ; PWD=/var/lib/x ; USER=root ; COMMAND=/bin/ls
 keep:150 {unit=sudo level=notice} deployer_tester : TTY=pts/0 ; PWD=/home/deployer_tester ; USER=root ; COMMAND=/usr/bin/curl -u mallory:hunter6 https://example.net/
+keep:163 {unit=sudo level=notice} fixture_user : TTY=pts/0 ; PWD=/srv/app ; USER=user ; ENV=FOO=fakeENVuser ; COMMAND=/usr/bin/tool fakeCMDuser
+keep:164 {unit=sshd.service level=info} User fixture;fakeTYPEDmid from 192.0.2.1 not allowed because not listed in AllowUsers
+keep:165 {unit=sshd.service level=info} User ;fakeTYPEDstart from 192.0.2.1 not allowed because not listed in AllowUsers
 keep:151 {unit=vaultwarden-backup.service level=notice} root : TTY=unknown ; PWD=/ ; USER=root ; COMMAND=/usr/bin/mysql -pfakeLEAK70 vault
 drop:154 {unit=alloy.service level=info} nft-drop: IN=eth0 OUT= SRC=192.0.2.200 DST=10.30.0.2 PROTO=TCP DPT=8080
 drop:155 {unit=vaultwarden.service container=vaultwarden level=info} |                  Version 1.35.1.mybank-private.example                  |

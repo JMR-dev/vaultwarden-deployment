@@ -878,7 +878,8 @@ sudo wg show wg-watchtower latest-handshakes | awk '{print $2}'   # column 1 is 
   between the scrub markers in `alloy/config.alloy`, and add made-up,
   real-shaped lines to `alloy/testdata/scrub.log` (`keep:`, `same:`, `drop:`,
   with the labels the journal would give them), patterns that must never ship
-  to `scrub.forbidden`, and counters to `scrub.metrics`. The rest of the block
+  to `scrub.forbidden`, whole lines as they must come out to `scrub.expect`, and
+  counters to `scrub.metrics`. The rest of the block
   is watchtower's shared one, unchanged: take a new version whole, with
   `shared.log`, `shared.forbidden` and `shared.expect`, watchtower's fixture with
   each line given `unit=alloy.service`. `shared.units` holds only the units the
