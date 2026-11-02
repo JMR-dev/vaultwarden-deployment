@@ -721,6 +721,18 @@ loki.process "scrub" {
 			values = {unit = "user-runtime-dir@.service"}
 		}
 	}
+
+	// Podman's transient health check units are named <container id>-<hex>.service,
+	// so each recreated container adds new values and new streams against the
+	// tenant's budget. The log lines stay; only the label loses the id. The match
+	// is on the whole value, so no ordinary unit is touched.
+	stage.match {
+		selector = `{unit=~"[0-9a-f]{64}-[0-9a-f]+\\.service"}`
+
+		stage.static_labels {
+			values = {unit = "podman-healthcheck.service"}
+		}
+	}
 }
 // scrub: end
 

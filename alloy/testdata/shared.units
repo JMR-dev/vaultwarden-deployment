@@ -1,2 +1,3 @@
 wg-quick@wg-watchtower.service wg-quick@wg-watchtower.service
 alloy.service alloy.service
+podman-auto-update.service podman-auto-update.service
