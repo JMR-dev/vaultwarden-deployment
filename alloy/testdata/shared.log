@@ -231,4 +231,49 @@ keep:257 {unit=alloy.service level=info} auth=[ "a fakeLEAK522" ]
 keep:258 {unit=alloy.service level=info} {"msg":"x otp=\"unclosed fakeLEAK523 y"}
 keep:259 {unit=alloy.service level=info} --token 'a fakeLEAK524' now
 keep:260 {unit=alloy.service level=info} peer 2001:0db8:85a3:0000:0000:8a2e:0370:7334 up
+keep:310 {unit=alloy.service level=info} sudo: pam_unix(sudo:session): session opened for user root(uid=0) by fixture(uid=3141592653)
+keep:311 {unit=alloy.service level=info} sudo: pam_unix(sudo:auth): authentication failure; logname=fixture uid=3141592654 euid=3141592655 tty=/dev/pts/0 ruser=fixture rhost= user=fixture
+keep:312 {unit=alloy.service level=info} systemd[1]: Started User Manager for UID 3141592656.
+keep:313 {unit=alloy.service level=info} systemd[1]: Created slice user-3141592657.slice - User Slice.
+keep:314 {unit=alloy.service level=info} podman[3120]: stat /run/user/3141592658/containers: no such file
+keep:315 {unit=alloy.service level=info} app[1]: uid=1000000000 is the shortest that goes
+same:160 {unit=alloy.service level=info} CRON[2001]: pam_unix(cron:session): session opened for user root(uid=0) by root(uid=0)
+same:161 {unit=alloy.service level=info} systemd[1]: Started User Manager for UID 1000.
+same:162 {unit=alloy.service level=info} systemd[1]: Created slice user-1000.slice - User Slice of UID 1000.
+same:163 {unit=alloy.service level=info} podman[3120]: stat /run/user/1000/containers: no such file
+same:164 {unit=alloy.service level=info} app[1]: uid=999999999 gid=1000 request 4012345678 done
+keep:300 {unit=alloy.service level=info} sudo[4567]: root : TTY=pts/0 ; PWD=/srv/app ; USER=svc ; ENV=MODE=fakeLEAK640 OTHER=fakeLEAK641 ; COMMAND=/usr/bin/fakeLEAK642 -pfakeLEAK643
+keep:301 {unit=alloy.service level=info} sudo[4567]: root : TTY=unknown ; PWD=/ ; USER=svc ; GROUP=adm ; TSID=00000A ; ENV=PATH=/fakeLEAK644 ; COMMAND=/bin/sh -c 'echo fakeLEAK645'
+keep:302 {unit=alloy.service level=info} sudo[4567]: root : (command continued) fakeLEAK646 the rest of a long one
+keep:303 {unit=alloy.service level=info} sudo[4567]: root : TTY=pts/1 ; PWD=/srv/app ; USER=root ; COMMAND=/usr/bin/curl -u fakeLEAK647:fakeLEAK648 https://app.internal/
+same:170 {unit=alloy.service level=info} app[1]: started ENV=production RUST_ENV=staging region=eu-central
+same:171 {unit=alloy.service level=info} sudo: pam_unix(sudo:session): session closed for user root
+keep:320 {unit=alloy.service level=info} pushed with ghp_fakeLEAK650fakefakefakefakefakefake now
+keep:321 {unit=alloy.service level=info} called with ya29.fakeLEAK651-fake_fake.fakefakefake now # nosemgrep: generic.secrets.security.detected-google-oauth-access-token.detected-google-oauth-access-token
+keep:322 {unit=alloy.service level=info} signed by AKIAFAKELEAK6520FAKE now
+keep:323 {unit=alloy.service level=info} {"note":"x_ghp_fakeLEAK653fakefakefakefakefake"}
+keep:324 {unit=alloy.service level=info} authorized ssh-ed25519 AAAAfakeLEAK654fakefakefakefakefakefake now
+keep:325 {unit=alloy.service level=info} authorized ssh-rsa AAAAfakeLEAK655fakefake/+fakefakefake== now
+keep:326 {unit=alloy.service level=info} authorized ecdsa-sha2-nistp256 AAAAfakeLEAK656fakefakefakefake now
+keep:327 {unit=alloy.service level=info} two parts eyJhbGciOiJub25lIn0.eyJzdWIiOiJmYWtlIn0 now # nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
+keep:328 {unit=alloy.service level=info} five parts eyJhbGciOiJSU0EifQ.fakeLEAK657key.fakeLEAK658iv.fakeLEAK659data.fakeLEAK660tag now # nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
+keep:329 {unit=alloy.service level=info} five parts eyJhbGciOiJkaXIifQ..fakeLEAK661iv.fakeLEAK662data.fakeLEAK663tag now
+keep:330 {unit=alloy.service level=info} sshd[99]: key SHA1:fakeLEAK664AbCdEfGhIjKl/+Mn0
+keep:331 {unit=alloy.service level=info} sshd[99]: key SHA-256:fakeLEAK665AbCdEfGhIjKlMnOpQrStUvWxYz/+01234
+keep:332 {unit=alloy.service level=info} tls[99]: cert SHA1:fakeLEAK666:aa:bb:cc:dd:ee:ff
+same:180 {unit=alloy.service level=info} git[1]: HEAD is now at 4b825dc642cb6eb9a060e54bf8d69288fbee4904 on main
+same:181 {unit=alloy.service level=info} gitea[1]: pushed SHA1:4b825dc642cb6eb9a060e54bf8d69288fbee4904 to main
+same:182 {unit=alloy.service level=info} tool[1]: file SHA-256:01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b ok
+same:183 {unit=alloy.service level=info} dnf[812]: Downloading successful, but checksum doesn't match. Calculated: 01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b(sha256) Expected: 3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b(sha256)
+same:184 {unit=alloy.service level=info} dnf[812]: Header SHA256 digest: OK Header SHA1 digest: OK Payload SHA256 digest: OK
+same:185 {unit=alloy.service level=info} dnf[812]: pulled sha256:01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b and sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904
+same:186 {unit=alloy.service level=info} sshd[12]: userauth_pubkey: key type ssh-rsa not in PubkeyAcceptedAlgorithms [preauth]
+same:187 {unit=alloy.service level=info} sshd[12]: host keys are ssh-ed25519, ssh-rsa and ecdsa-sha2-nistp256
+same:188 {unit=alloy.service level=info} app[1]: prefix ghp_ or ya29. or AKIA is no token, nor is AKIAONLYSHORT
+same:189 {unit=alloy.service level=info} app[1]: blob eyJmYWtlIjoiZGF0YSJ9 has no dot
+keep:316 {unit=alloy.service level=info} systemd[1]: Started user@3141592650.service - User Manager for UID 3141592651.
+keep:317 {unit=alloy.service level=info} systemd[1]: Starting user-runtime-dir@3141592652.service - User Runtime Directory /run/user/3141592659...
+keep:318 {unit=alloy.service level=info} systemd[1]: user@1000000000.service: Consumed 1.234s CPU time.
+same:190 {unit=alloy.service level=info} systemd[1]: Started user-runtime-dir@1000.service - User Runtime Directory /run/user/1000.
+same:191 {unit=alloy.service level=info} systemd[1]: user@999999999.service: Consumed 1.234s CPU time.
 same:59 {unit=alloy.service level=info} 2026-10-26 03:12:45 mimir ingester ring healthy, 150000 series

@@ -1,0 +1,26 @@
+keep:122 sudo[4567]: root : TTY=pts/0 ; PWD=/root ; USER=root ; COMMAND=[REDACTED-COMMAND]
+keep:300 sudo[4567]: root : TTY=pts/0 ; PWD=/srv/app ; USER=svc ; ENV=[REDACTED-COMMAND]
+keep:301 sudo[4567]: root : TTY=unknown ; PWD=/ ; USER=svc ; GROUP=adm ; TSID=00000A ; ENV=[REDACTED-COMMAND]
+keep:302 sudo[4567]: root : (command continued)[REDACTED-COMMAND]
+keep:303 sudo[4567]: root : TTY=pts/1 ; PWD=/srv/app ; USER=root ; COMMAND=[REDACTED-COMMAND]
+keep:310 sudo: pam_unix(sudo:session): session opened for user root(uid=0) by fixture(uid=[REDACTED-UID])
+keep:311 sudo: pam_unix(sudo:auth): authentication failure; logname=fixture uid=[REDACTED-UID] euid=[REDACTED-UID] tty=/dev/pts/0 ruser=fixture rhost= user=fixture
+keep:312 systemd[1]: Started User Manager for UID [REDACTED-UID].
+keep:313 systemd[1]: Created slice user-[REDACTED-UID].slice - User Slice.
+keep:314 podman[3120]: stat /run/user/[REDACTED-UID]/containers: no such file
+keep:315 app[1]: uid=[REDACTED-UID] is the shortest that goes
+keep:316 systemd[1]: Started user@[REDACTED-UID].service - User Manager for UID [REDACTED-UID].
+keep:317 systemd[1]: Starting user-runtime-dir@[REDACTED-UID].service - User Runtime Directory /run/user/[REDACTED-UID]...
+keep:318 systemd[1]: user@[REDACTED-UID].service: Consumed 1.234s CPU time.
+keep:320 pushed with [REDACTED-TOKEN] now
+keep:321 called with [REDACTED-TOKEN] now # nosemgrep: generic.secrets.security.detected-google-oauth-access-token.detected-google-oauth-access-token
+keep:322 signed by [REDACTED-TOKEN] now
+keep:324 authorized ssh-ed25519 [REDACTED-SSH-KEY] now
+keep:325 authorized ssh-rsa [REDACTED-SSH-KEY] now
+keep:326 authorized ecdsa-sha2-nistp256 [REDACTED-SSH-KEY] now
+keep:327 two parts [REDACTED-JWT] now # nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
+keep:328 five parts [REDACTED-JWT] now # nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
+keep:329 five parts [REDACTED-JWT] now
+keep:330 sshd[99]: key SHA1:[REDACTED-FINGERPRINT]
+keep:331 sshd[99]: key SHA-256:[REDACTED-FINGERPRINT]
+keep:332 tls[99]: cert SHA1:[REDACTED-FINGERPRINT]

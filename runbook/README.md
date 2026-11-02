@@ -621,10 +621,11 @@ In Grafana Explore (`Loki (jasonmross)`, `Mimir (jasonmross)`), with
   {host="H"} |= "\"transaction\""
   {host="H"} |~ "(?i)\"(cookie|authorization)\""
   {host="H"} |~ "_(gmail|googlemail)_com"
-  {host="H"} |= "(command continued)"
+  {host="H"} |~ "\\(command continued\\)[^\\[]"
   {host="H"} |= "BECOME-SUCCESS"
   {host="H"} |= "SECRET_VALUE"
   {host="H"} |~ "COMMAND=[^\\[]"
+  {host="H"} |~ "\\bENV=[^\\[]"
   ```
 
 ---
@@ -838,10 +839,10 @@ that only goes out:
   journal only failed logins and 2FA failures (IP and the whole username
   field cut), Vaultwarden's start banner and systemd's start/stop lines;
   backup, restic, dnf, podman-auto-update, the tunnel and Alloy; sshd and
-  sudo with user fields cut and sudo's `COMMAND=` cut to the end of the line
-  (that someone ran sudo ships, what they ran stays in the journal), but none
-  of sudo's lines for Ansible or for a command past 960 bytes. Watchtower's
-  shared block then scrubs all of it. Caddy's, the WAF's and fail2ban's lines are only
+  sudo with user fields cut, but none of sudo's lines for Ansible or for a
+  command past 960 bytes. Watchtower's shared block then scrubs all of it, and
+  cuts sudo's `ENV=` and `COMMAND=` to the end of the line on any unit (that
+  someone ran sudo ships, what they ran stays in the journal). Caddy's, the WAF's and fail2ban's lines are only
   counted, then dropped. Metrics: host (unix, systemd), Alloy's own,
   Caddy's (`127.0.0.1:2020`), and a probe of `https://<vault>/alive`. Labels
   `service="vaultwarden"`, `host`, `env` (the stack).
@@ -879,8 +880,9 @@ sudo wg show wg-watchtower latest-handshakes | awk '{print $2}'   # column 1 is 
   with the labels the journal would give them), patterns that must never ship
   to `scrub.forbidden`, and counters to `scrub.metrics`. The rest of the block
   is watchtower's shared one, unchanged: take a new version whole, with
-  `shared.log` and `shared.forbidden`, watchtower's fixture with each line given
-  `unit=alloy.service`. CI runs `scripts/check-alloy-scrub.sh` over both fixtures
+  `shared.log`, `shared.forbidden` and `shared.expect`, watchtower's fixture with
+  each line given `unit=alloy.service`. `shared.units` holds only the units the
+  allow-list lets through. CI runs `scripts/check-alloy-scrub.sh` over both fixtures
   (locally: `alloy`, `jq` and `curl`), plus `alloy fmt --test` and
   `alloy validate`.
 - **Bump Alloy**: `alloy_version` and `alloy_zip_sha256` (the release's

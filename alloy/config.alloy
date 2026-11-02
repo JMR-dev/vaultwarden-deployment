@@ -290,17 +290,6 @@ loki.process "scrub" {
 		drop_counter_reason = "sudo_command"
 	}
 
-	// The rest of sudo's lines ship without the command: that someone ran
-	// sudo goes to watchtower, and what they ran stays in the journal. A
-	// secret passed as an argument or a name typed in a query has no key
-	// name for a rule below to match. To the end of the line, since COMMAND=
-	// comes last, and on any unit, since sudo run from a service logs under
-	// that service.
-	stage.replace {
-		expression = `(?s)\bCOMMAND=(.*)`
-		replace    = "[REDACTED-COMMAND]"
-	}
-
 	// sshd and sudo: that someone logged in or ran a command ships; who, and
 	// with which key, doesn't. OS Login names are email addresses, and a name
 	// that failed can be anything typed at the prompt, a password with spaces
@@ -430,15 +419,44 @@ loki.process "scrub" {
 		drop_counter_reason = "waf_data"
 	}
 
-	// JWTs, and bearer tokens wherever they appear.
+	// sudo's command and environment: who ran it, when and as whom ship, and
+	// what they ran stays in the journal. A secret passed as an argument has no
+	// key name for a rule below to match. ENV= comes before COMMAND= (`sudo
+	// NAME=value cmd`), COMMAND= comes last and "(command continued)" is the
+	// rest of one past 960 bytes, so each goes to the end of the line. On any
+	// unit, since sudo run from a service logs under that service. ENV= only
+	// after sudo's " ; ", so an app's own ENV=production stays.
 	stage.replace {
-		expression = `\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*)`
+		expression = `(?s)(?:;\s*ENV=|\bCOMMAND=|\(command continued\))(.*)`
+		replace    = "[REDACTED-COMMAND]"
+	}
+
+	// JWTs: the two parts of an unsigned one and all five of an encrypted one,
+	// whose second part can be empty. Bearer tokens wherever they appear.
+	stage.replace {
+		expression = `\b(eyJ[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]*)+)`
 		replace    = "[REDACTED-JWT]"
 	}
 
 	stage.replace {
 		expression = `(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{8,})`
 		replace    = "[REDACTED-CREDENTIAL]"
+	}
+
+	// Tokens known by their shape alone, with no key name beside them: GitHub's
+	// ghp_, Google's ya29. and AWS's AKIA. The left edge is a character of its
+	// own, so one after a _ goes too; the lengths leave the bare prefixes alone.
+	stage.replace {
+		expression = `(?:^|[^A-Za-z0-9])(ghp_[A-Za-z0-9]{16,}|ya29\.[A-Za-z0-9._-]{16,}|AKIA[0-9A-Z]{16})`
+		replace    = "[REDACTED-TOKEN]"
+	}
+
+	// SSH public keys, which name a person as a fingerprint does. Only the key:
+	// its type stays, as does a type named alone (sshd's "key type ssh-rsa not
+	// in"), and so does a comment after it.
+	stage.replace {
+		expression = `\b(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+)\s+(AAAA[A-Za-z0-9+/]{16,}={0,3})`
+		replace    = "[REDACTED-SSH-KEY]"
 	}
 
 	// Basic credentials: a value with a digit or base64's + / = in it, so
@@ -449,9 +467,12 @@ loki.process "scrub" {
 	}
 
 	// SSH key fingerprints, which name a person's key. Upper case only: a
-	// lower-case sha256: is an image digest.
+	// lower-case sha256: is an image digest. A SHA1: or SHA-256: followed by
+	// exactly a hash in lower-case hex is a checksum or a git sha, no fingerprint
+	// (those are base64 or colon-separated): the first two alternatives have no
+	// capture group, so they hide nothing.
 	stage.replace {
-		expression = `\b(?:SHA256|MD5):([A-Za-z0-9+/=:]{16,})`
+		expression = `\bSHA1:[0-9a-f]{40}(?:$|[^A-Za-z0-9+/=:])|\bSHA-256:[0-9a-f]{64}(?:$|[^A-Za-z0-9+/=:])|\b(?:SHA256|SHA-256|SHA1|MD5):([A-Za-z0-9+/=:]{16,})`
 		replace    = "[REDACTED-FINGERPRINT]"
 	}
 
@@ -548,8 +569,7 @@ loki.process "scrub" {
 		replace    = "[REDACTED-SECRET]"
 	}
 
-	// A secret passed as a separate argument: --password x on a command
-	// line, sudo's COMMAND= included.
+	// A secret passed as a separate argument: --password x on a command line.
 	stage.replace {
 		expression = `(?i)--(?:[\w-]*(?:pass[_-]?(?:word|phrase|code|key|hash)|passwd|pwd|secret|token|bearer|api[\s._-]?key|private[\s._-]?key|preshared[_-]?key|session|credential|csrf|(?:t?otp|auth|mfa)[_-]?(?:code|key)|(?:access|signing|encryption|ssh)[_-]?key)[\w-]*|(?:[\w-]*-)?(?:pass|t?otp|o?auth))\s+(\\"(?:\\\\\\"|\\\\|\\[^"\\]|[^"\\])*\\"|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s"',]+)`
 		replace    = "[REDACTED-SECRET]"
@@ -604,6 +624,15 @@ loki.process "scrub" {
 	stage.replace {
 		expression = `\b(sa_\d{10,})\b`
 		replace    = "[REDACTED-USER]"
+	}
+
+	// OS Login uids, which stand for their users and run to 10 digits: pam's
+	// uid= (auid= and euid= hold the same text), systemd's "UID <n>", its
+	// user-<n>.slice, user@<n>.service and user-runtime-dir@<n>.service, and
+	// /run/user/<n>. The unit's name stays. root and other small uids stay.
+	stage.replace {
+		expression = `uid=(\d{10,})\b|\bUID (\d{10,})\b|\buser-(\d{10,})\.slice|\buser(?:-runtime-dir)?@(\d{10,})\.service|/run/user/(\d{10,})\b`
+		replace    = "[REDACTED-UID]"
 	}
 
 	// IPv4 addresses, whole, next to a letter or _ too (ip_192.0.2.1). A
@@ -669,6 +698,27 @@ loki.process "scrub" {
 	stage.drop {
 		expression          = `(?i)[\w.-]*(?:password|passwd|secret)[\w.-]*\s*[:=]\s*[^\s\["'=>:]`
 		drop_counter_reason = "secret"
+	}
+
+	// A login's user manager and runtime directory are user@<uid>.service and
+	// user-runtime-dir@<uid>.service in the unit label (the relabel rule above
+	// sets it), and an OS Login uid in a label is a stream per user. stage.replace
+	// only touches the line, so these rewrite the label. Last, so a service's own
+	// rules still see the unit as it came.
+	stage.match {
+		selector = `{unit=~"user@[0-9]+\\.service"}`
+
+		stage.static_labels {
+			values = {unit = "user@.service"}
+		}
+	}
+
+	stage.match {
+		selector = `{unit=~"user-runtime-dir@[0-9]+\\.service"}`
+
+		stage.static_labels {
+			values = {unit = "user-runtime-dir@.service"}
+		}
 	}
 }
 // scrub: end

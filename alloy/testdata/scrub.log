@@ -133,6 +133,10 @@ drop:95 {unit=session-7.scope level=info} ansible-ansible.legacy.command Invoked
 drop:96 {unit=systemd-logind.service level=info} New session 7 of user fixture_user99_gmail_com.
 drop:97 {unit=fail2ban-digest.service level=info} mailed 3 bans: 198.51.100.23 203.0.113.9 192.0.2.66
 drop:98 {unit=status-email-root@vaultwarden-backup.service.service level=info} Started status-email-root@vaultwarden-backup.service.service - Email root the journal for failed unit vaultwarden-backup.service.
+drop:159 {unit=user@3141592653.service level=info} Started Session Slice.
+drop:160 {unit=user@1000.service level=info} Started Session Slice.
+drop:161 {unit=user-runtime-dir@3141592653.service level=info} Finished User Runtime Directory.
+drop:162 {unit=user-runtime-dir@1000.service level=info} Finished User Runtime Directory.
 drop:99 {} kernel: wg-watchtower: peer handshake from 192.0.2.1
 same:100 {unit=vaultwarden-backup.service level=info} snapshot 8d3c1a2f saved
 same:101 {unit=restic-check.service level=info} no errors were found
