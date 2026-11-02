@@ -1,4 +1,4 @@
-// Grafana Alloy (v1.21.2) on a Vaultwarden host: ships its journal and
+// Grafana Alloy (v1.21.3) on a Vaultwarden host: ships its journal and
 // metrics to watchtower (the watchtower-observability-stack repo;
 // docs/client-telemetry.md there is the contract). Installed by
 // ansible/roles/logship as a host binary under alloy.service, because the

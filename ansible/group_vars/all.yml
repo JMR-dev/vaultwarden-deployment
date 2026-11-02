@@ -117,8 +117,8 @@ watchtower_tenant: jasonmross
 # Grafana Alloy, the release zip for x86_64 from GitHub, pinned by the sha256
 # its release publishes in SHA256SUMS. A bump changes both; CI's checks
 # (.gitea/actions/setup) read them from here too.
-alloy_version: v1.21.2
-alloy_zip_sha256: 1eadb46a0640127184250173acd9b4145e4d590680db37ffe66fa8afd07f04cf
+alloy_version: v1.21.3
+alloy_zip_sha256: 50d23af2d0f98c00beac6ce9a365693e60f87fb76b6cad6fe1d161e80588af6d
 # A 2 GB host: the cap keeps an Alloy OOM from taking the vault with it.
 alloy_memory_max: 256M
 alloy_gomemlimit: 200MiB
