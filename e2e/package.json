@@ -1,0 +1,16 @@
+{
+  "name": "vaultwarden-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser checks of the disposable stack, run by scripts/e2e-disposable.sh",
+  "packageManager": "pnpm@12.16.1",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "list": "playwright test --list"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
