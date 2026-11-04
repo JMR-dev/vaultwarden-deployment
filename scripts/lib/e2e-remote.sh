@@ -178,8 +178,15 @@ alloy_cannot_see_data() {
 }
 
 # alloy_sandbox: the same check on its own, for after the mount guard.
+# Alloy's private mount namespace is a slave of the host's, so the remount
+# reaches it too. Recent kernels tuck a propagated mount under the
+# InaccessiblePaths= cover, keeping /data hidden; this checks that rather
+# than assuming it. If the cover was lost, restart Alloy (which rebuilds its
+# namespace) and fail, so the finding isn't hidden.
 alloy_sandbox() {
-  alloy_cannot_see_data || fail "Alloy can see ${data} after the remount"
+  alloy_cannot_see_data && return 0
+  systemctl restart alloy.service || true
+  fail "Alloy could see ${data} after the remount (restarted it to restore the sandbox)"
 }
 
 # --- Signups ----------------------------------------------------------------
@@ -356,9 +363,8 @@ after_reboot() {
 }
 
 # mount_guard: runbook §3.9's empty-/data guard. With /data unmounted,
-# Vaultwarden must refuse to start. Then put everything back, and restart
-# Alloy: the remount reaches its private mount namespace without the
-# InaccessiblePaths= cover, so until it restarts it could see /data.
+# Vaultwarden must refuse to start. Then put everything back. The caller
+# checks Alloy's sandbox next (alloy_sandbox).
 mount_guard() {
   local refused=0
   vault_systemctl stop vaultwarden.service
@@ -380,13 +386,11 @@ mount_guard() {
   note "Vaultwarden refused to start on an empty ${data}, and is back"
 }
 
-# restore_services: /data mounted, fail2ban and Vaultwarden running, Alloy
-# restarted if /data was remounted. Idempotent; the mount guard and the
-# cleanup both end with it.
+# restore_services: /data mounted, fail2ban and Vaultwarden running.
+# Idempotent; the mount guard and the cleanup both end with it.
 restore_services() {
   if ! mountpoint -q "$data"; then
     mount "$data"
-    systemctl restart alloy.service 2>/dev/null || true
   fi
   systemctl is-active --quiet fail2ban.service || systemctl start fail2ban.service
   if ! vault_systemctl is-active --quiet vaultwarden.service; then
@@ -406,6 +410,11 @@ cleanup() {
     note "unbanned the runner's address"
   fi
   restore_services || { note "could not bring /data, fail2ban or Vaultwarden back"; status=1; }
+  # A remount may have uncovered /data in Alloy's namespace (alloy_sandbox);
+  # a restart rebuilds it.
+  if systemctl is-active --quiet alloy.service && ! alloy_cannot_see_data 2>/dev/null; then
+    systemctl restart alloy.service || { note "could not restart Alloy"; status=1; }
+  fi
   restore_stop || { note "could not remove the restore drill's files"; status=1; }
   close_signups >/dev/null || { note "could not close signups"; status=1; }
   return "$status"

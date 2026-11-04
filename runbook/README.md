@@ -592,11 +592,11 @@ sudo systemctl --user -M vaultwarden@ start vaultwarden.service   # must FAIL (E
 sudo mount /data
 sudo systemctl start fail2ban
 sudo systemctl --user -M vaultwarden@ start vaultwarden.service   # back up
-# Alloy's private mount namespace gets the new /data mount without its
-# InaccessiblePaths= cover; a restart rebuilds it. Then check, as in §3.12:
-sudo systemctl restart alloy
+# The remount reaches Alloy's private mount namespace too. Check its
+# InaccessiblePaths= cover held, as in §3.12:
 sudo nsenter -t "$(systemctl show alloy -p MainPID --value)" -m -S "$(id -u alloy)" -G "$(id -g alloy)" ls /data
-# → Permission denied
+# → Permission denied. Anything else: `sudo systemctl restart alloy`
+#   (it rebuilds the namespace), check again, and treat it as a finding.
 ```
 
 Quadlet-survives-restart is the failure most likely to bite a week

@@ -19,7 +19,8 @@
 #     only the browser uses (closed);
 #   - a fail2ban ban of this runner's public address on the VM (unbanned);
 #   - /data unmounted and fail2ban stopped by the mount guard (remounted,
-#     restarted, with Vaultwarden and Alloy);
+#     fail2ban and Vaultwarden started; Alloy restarted only if the remount
+#     uncovered /data in its namespace);
 #   - the restore drill's /var/tmp/e2e-restore and its temporary container,
 #     plus the `ssh -L` that reaches it (removed, shredded, closed);
 #   - the signup window `configure` opened (closed, timer disarmed).
@@ -538,8 +539,11 @@ passed "back up: /data, swap, IPv6 address, both containers, public HTTPS"
 
 check "runbook §3.9: Vaultwarden refuses an empty /data"
 remote mount_guard
+passed "start refused while unmounted; remounted, fail2ban and Vaultwarden back"
+
+check "runbook §3.12: Alloy still can't see /data after the remount"
 remote alloy_sandbox
-passed "start refused while unmounted; remounted, fail2ban and Vaultwarden back, Alloy still kept out of /data"
+passed "Permission denied in its own mount namespace"
 
 current=""
 log "All checks passed"
