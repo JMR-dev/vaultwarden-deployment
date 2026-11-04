@@ -139,6 +139,91 @@ Append a one-liner to `runbook/drill-log.md` (create it if missing):
 A drill log makes the next "did this ever actually work?" question
 answerable.
 
+## On disposable
+
+The procedure above restores **production's** backups, quarterly, by hand,
+and stays that way. Disposable has a variant that never touches production:
+it restores disposable's own latest snapshot (its own R2 bucket and restic
+password) on `vault-disposable` itself. It proves the same path end to end
+(restic, the snapshot's SQLite, a Vaultwarden serving it, a login), but not
+that production's bucket and password work: only the quarterly drill does.
+
+### By CI: deploy.yml's `verify`
+
+Every disposable deploy runs it (`scripts/e2e-disposable.sh`, after the
+runbook §3.6 backup):
+
+1. As the `vaultwarden` user, with the host's own `/etc/vaultwarden/restic.env`
+   (no credential leaves the host), `restic restore latest` into
+   `/var/tmp/e2e-restore`.
+2. `PRAGMA integrity_check` on the restored `db-backup.sqlite3` must say
+   `ok`, its `ciphers`, `users` and `attachments` counts must equal the live
+   database's, and neither of the run's canaries may be in it in plaintext.
+3. A temporary Vaultwarden, `vw-e2e-restore`, rootless as `vaultwarden`, from
+   the image the live one runs, serves the restored data on
+   `127.0.0.1:8444` with a throwaway certificate made on the host. The job
+   reaches it with `ssh -L` and Playwright, trusting that one certificate by
+   its SPKI pin, logs in with the run's account, opens the canary item, and
+   downloads its attachment, which must match what was uploaded.
+4. The container is removed and every restored file shredded, also by the
+   job's trap if anything failed.
+
+The job summary has the result. It doesn't write `drill-log.md`; the
+quarterly production drill does.
+
+### By hand, on disposable
+
+The same steps, when `verify` can't run. Your own account must be in the
+snapshot: create it while the signup window is open (runbook §2.8), add an
+item, then run a backup (runbook §3.6).
+
+```sh
+gcloud compute ssh vault-disposable --zone us-east1-b --tunnel-through-iap -- -L 8444:127.0.0.1:8444
+# On the host. cd / first: the vaultwarden user can't enter your home.
+cd /
+sudo install -d -m 0700 -o vaultwarden -g vaultwarden /var/tmp/drill /var/tmp/drill/tls
+sudo -u vaultwarden bash -c 'set -a; . /etc/vaultwarden/restic.env; set +a
+  restic snapshots --latest 3
+  restic restore latest --target /var/tmp/drill/restore'
+sudo -u vaultwarden sqlite3 /var/tmp/drill/restore/data/db-backup.sqlite3 'PRAGMA integrity_check;'
+# Expected: ok
+sudo -u vaultwarden sqlite3 -readonly /var/tmp/drill/restore/data/db-backup.sqlite3 \
+  'SELECT COUNT(*) FROM ciphers; SELECT COUNT(*) FROM users;'
+sudo sqlite3 -readonly /data/db.sqlite3 'SELECT COUNT(*) FROM ciphers; SELECT COUNT(*) FROM users;'
+# The same counts.
+
+sudo -u vaultwarden openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+  -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+  -keyout /var/tmp/drill/tls/key.pem -out /var/tmp/drill/tls/cert.pem
+sudo -u vaultwarden openssl x509 -in /var/tmp/drill/tls/cert.pem -noout -fingerprint -sha256
+
+# Rootless as vaultwarden (the only account with subuids), from the live
+# image, on the host's loopback only.
+vw() { sudo -u vaultwarden XDG_RUNTIME_DIR=/run/user/1100 podman "$@"; }
+vw run --rm -d --name vw-drill --log-driver k8s-file \
+  -p 127.0.0.1:8444:8444 \
+  -v /var/tmp/drill/restore/data:/data:Z \
+  -v /var/tmp/drill/tls:/ssl:ro,Z \
+  -e DATA_FOLDER=/data \
+  -e DATABASE_URL=sqlite:///data/db-backup.sqlite3 \
+  -e SIGNUPS_ALLOWED=false \
+  -e WEB_VAULT_ENABLED=true \
+  -e ROCKET_PORT=8444 \
+  -e 'ROCKET_TLS={certs="/ssl/cert.pem",key="/ssl/key.pem"}' \
+  -e DOMAIN=https://localhost:8444 \
+  "$(vw inspect --format '{{.Image}}' vaultwarden)"
+```
+
+Then step 5's browser checks at `https://localhost:8444/` (through the
+`-L`), comparing the certificate's fingerprint with the one printed above.
+Tear down on the host:
+
+```sh
+vw stop vw-drill
+sudo find /var/tmp/drill -type f -exec shred -u {} +
+sudo rm -rf /var/tmp/drill
+```
+
 ## The second copy: GCE snapshots
 
 The data disk also has daily, crash-consistent snapshots

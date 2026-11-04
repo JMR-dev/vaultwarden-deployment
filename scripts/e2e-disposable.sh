@@ -215,7 +215,7 @@ write_summary() {
     fi
     printf '\n### Still manual (runbook §3)\n\n'
     printf -- '- §3.7a-d: the mail and Healthchecks paths.\n'
-    printf -- '- §3.11a/b: the production-only-from-main guard and the replace guard.\n'
+    printf -- '- §3.11a/b: the main-only guard and the replace guard.\n'
     printf -- '- §3.12 in watchtower (Grafana Explore, host `vault-disposable`, from %s UTC): nothing may match\n' "$started_at"
     printf -- '  `nobody-%s`, `not-a-password-%s` or `e2e-realip-%s`, nor any of the other queries in §3.12;\n' "$marker" "$marker" "$marker"
     printf -- '  `loki_process_custom_vaultwarden_failed_logins` should rise by 3 (those three logins).\n'

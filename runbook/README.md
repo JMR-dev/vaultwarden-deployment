@@ -11,8 +11,11 @@ Two Pulumi projects: `platform/` (owner-run: network, static IPs, DNS, R2
 buckets, the Resend mail domain, Artifact Registry, every IAM grant) and
 `pulumi/` (CI-run: the VM,
 its data disk, snapshots). Gitea Actions deploys with a deployer SA key —
-Gitea 1.27 can't mint Actions OIDC tokens — and that SA can rebuild the VM
-but can't grant IAM. Ansible configures the host over IAP + OS Login; there
+Gitea 28.2's Actions still issue no OIDC token GCP accepts
+(go-gitea/gitea#33681) — and that SA can rebuild the VM but can't grant
+IAM. A disposable deploy ends with `verify`, end-to-end checks run as a
+keyless `vaultwarden-e2e@` account that can reach `vault-disposable` alone
+(§3). Ansible configures the host over IAP + OS Login; there
 is no public SSH. The one WireGuard tunnel goes out, not in: each VM is a
 write-only agent peer of watchtower, the owner's observability stack, and
 ships its logs (drop-by-default) and metrics there (§6, "Telemetry").
@@ -223,24 +226,35 @@ branch, so `.gitea/workflows/deploy.yml` has to reach `main` first. Merging
 deploys nothing: `deploy.yml` is dispatch-only.
 
 1. Merge the branch carrying `.gitea/workflows/deploy.yml` into `main`.
-2. Gitea → **Actions → deploy → Run workflow**: `stack=disposable`,
-   `signups=true`. That run opens registration.
+2. Gitea → **Actions → deploy → Run workflow**: `stack=disposable`. A
+   disposable deploy always opens registration, whatever `signups` says.
 
 Any branch can be dispatched against disposable; production only from
 `main`.
 
-The run is `guard → image → infra → configure`:
+The run is `guard → image → infra → configure → verify`:
 
 - **image** builds the Caddy image, Trivy-scans it, pushes `caddy:<sha>`
   and moves the floating `caddy:disposable` tag.
 - **infra** previews and applies `pulumi up` (the first run creates the VM
   and disk).
-- **configure** runs `scripts/ansible-iap.sh disposable`.
+- **configure** runs `scripts/ansible-iap.sh disposable`, with signups on.
+- **verify** (disposable only) runs `scripts/e2e-disposable.sh`: it
+  registers a test account `e2e-<marker>@example.com` through an IAP tunnel,
+  runs the §3 checks and the restore drill, then closes the window and
+  disarms its timer. What it does and what stays manual: §3.
 
-Expect ~10–15 minutes on a fresh VM.
+Expect ~10–15 minutes on a fresh VM, plus ~15 for verify.
 
-Then create the test account **through an IAP tunnel**. Caddy answers 404 to
-registration from anywhere else, even while signups are open. The new
+`verify` needs the repo-scoped `vaultwarden-e2e` Gitea runner (the gitea
+repo's `infra/`); without it, the job waits for one. Its account isn't yours,
+and the checks that stay manual need none. If you want your own anyway, or
+`verify` can't run, create it by hand as below while the window is open:
+`verify` closes it a few minutes in, once its browser stage is done; without
+`verify`, the timer closes it an hour after `configure`.
+
+**By hand:** create the account **through an IAP tunnel**. Caddy answers 404
+to registration from anywhere else, even while signups are open. The new
 hostname is in the public Certificate Transparency logs within minutes, and
 bots register on fresh instances to host files with Send.
 
@@ -261,12 +275,16 @@ bots register on fresh instances to host files with Send.
    `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://disposable.vault.jasonrossmedia.com/identity/accounts/register`
    should print `404`.
 
-The window closes itself `vaultwarden_signups_window_minutes` (30) after the
-deploy. `vaultwarden-signups-close.timer` turns `SIGNUPS_ALLOWED` off, and the
-timer is persistent, so it survives a reboot. Root then gets a mail listing
-**every account in the vault**: check that each one is yours. Re-running the
-workflow with `signups=false` closes the window early, as any later deploy
-does. To close it by hand: `sudo /usr/local/sbin/vaultwarden-signups-close`.
+The window closes itself `vaultwarden_signups_window_minutes` after the
+deploy: 30 minutes on production, 60 on disposable (a host var in
+`ansible/inventory/disposable.yml`). `vaultwarden-signups-close.timer` turns
+`SIGNUPS_ALLOWED` off, and the timer is persistent, so it survives a reboot.
+Root then gets a mail listing **every account in the vault**: check that each
+one is yours (on disposable, expect one `e2e-<marker>@example.com` per
+`verify` run). `verify` closes it early with the same closer, then disarms the
+timer. On production, re-running the workflow with `signups=false` closes the
+window early, as any later production deploy does. To close it by hand:
+`sudo /usr/local/sbin/vaultwarden-signups-close`.
 
 `/admin` is disabled by default, so the `signups` deploy is the only way to
 create the first account on a fresh stack.
@@ -291,11 +309,15 @@ its R2 bucket. The first cycle is §2.8 plus §3; later ones are just this.
    its A/AAAA records and grants its secrets. It's a Parameter Manager value,
    so there's nothing to commit (`secrets/README.md`, "stack on/off
    parameters").
-2. ⚠ Dispatch deploy: `stack=disposable`, from the branch under test, with
-   `signups=true` on a fresh VM, then once more with `signups=false`.
-3. Test. Its Healthchecks checks resume on their first ping. It ships its
-   telemetry to watchtower with its own peer, as `env="disposable"`, and
-   stays out of watchtower's alerts (§6, "Telemetry").
+2. ⚠ Dispatch deploy: `stack=disposable`, from the branch under test. One
+   dispatch: `configure` opens signups and `verify` closes them, so no
+   second `signups=false` run is needed.
+3. Test. `verify` has run §3's automatable checks and the restore drill; its
+   job summary lists the results, what it skipped and the markers for the
+   manual rest (§3). Its Healthchecks checks resume on their first ping (the
+   backup `verify` runs is one). It ships its telemetry to watchtower with
+   its own peer, as `env="disposable"`, and stays out of watchtower's alerts
+   (§6, "Telemetry").
 
 **End**
 
@@ -325,6 +347,41 @@ Every cycle issues a new Let's Encrypt certificate for
 Run all of these on the disposable stack before promoting. Each one is a
 real test of an actual guarantee, not a smoke test.
 
+**Most of them run themselves.** Every disposable deploy ends with
+`deploy.yml`'s `verify` job (`scripts/e2e-disposable.sh`, browser steps in
+`e2e/`). It runs, in this order:
+
+| Check | How `verify` does it |
+|---|---|
+| §2.8 signup | Playwright through an IAP tunnel: register `e2e-<marker>@example.com`, log in, add a login whose notes hold a canary, attach a file, log out |
+| §3.12's two lines | through the tunnel: a failed login as `nobody-<marker>@example.com`, and `not-a-password-<marker>` as the username (by curl: the web vault won't send a non-address) |
+| §2.8 step 5, §3.3 | publicly, while signups are open: register and `/admin` 404, :22 doesn't connect; through the tunnel, `/admin` isn't 404 |
+| §3.2 | public TLS over IPv4; over IPv6 only if the runner has an IPv6 route, otherwise skipped and the summary says so |
+| §3.4 | a failed login from the runner's public address (`e2e-realip-<marker>@example.com`); Caddy's access log and `vaultwarden.log` must show that address |
+| §3.8 | after a WAL checkpoint, the notes and attachment canaries: 0 hits in `db.sqlite3*`, `db-backup.sqlite3` and `attachments/` |
+| §3.10 | neither upload request refused, and `coraza-audit.log` grew |
+| §3.12 on the host | the whole block below |
+| §3.5 | bans the runner's address, the request is refused, `nft -f main.nft`, the ban and the f2b line count hold, unban |
+| §3.6 | a backup now; the newest snapshot is from it |
+| restore drill | `restore-drill.md`, "On disposable, by CI" |
+| §3.9 | auto-update, reboot, the post-reboot checks, then the mount guard (and Alloy's sandbox again) |
+
+It closes the signup window and disarms its timer right after the
+registration checks. Its trap puts the host back however far it got: unban,
+`/data` remounted, fail2ban and Vaultwarden started, the drill's container
+and files removed, signups closed, its OS Login key removed. The job summary
+lists every result, anything skipped, and the run's marker for the queries
+below. A failed run uploads its screenshots and HTML report (never traces).
+
+**Still by hand** (the procedures below stay as they are, and are the
+fallback whenever `verify` can't run):
+- §3.1, which is the deploy itself;
+- §3.7a–d: the mail and Healthchecks paths;
+- §3.11a/b: the production-from-main and replace guards (§3.11c is
+  `platform/main_test.go`);
+- §3.12's Watchtower queries, with the marker from the job summary;
+- §3.2 over IPv6, when the summary says it was skipped.
+
 `gcloud compute ssh` below always means
 `gcloud compute ssh vault-disposable --zone us-east1-b --tunnel-through-iap`.
 
@@ -334,7 +391,7 @@ real test of an actual guarantee, not a smoke test.
 cd pulumi && go build -o bin/vaultwarden .
 pulumi login gs://vaultwarden-497422-pulumi-state
 pulumi destroy -s disposable
-# then: Actions → deploy → Run workflow, stack=disposable (signups=true, then false)
+# then: Actions → deploy → Run workflow, stack=disposable
 ```
 
 Zero hand-patching between phases. If anything needed manual intervention,
@@ -450,7 +507,9 @@ sudo journalctl -u vaultwarden-backup.service --since "5 min ago"
 sudo -u vaultwarden bash -c 'set -a; . /etc/vaultwarden/restic.env; set +a; restic snapshots'
 ```
 
-Then run the full restore drill — see `runbook/restore-drill.md`.
+Then run the full restore drill — see `runbook/restore-drill.md`. `verify`
+runs its disposable variant ("On disposable") on every disposable deploy;
+the quarterly drill of production's backups stays by hand.
 
 ### 3.7 Alerting actually fires
 
@@ -533,6 +592,11 @@ sudo systemctl --user -M vaultwarden@ start vaultwarden.service   # must FAIL (E
 sudo mount /data
 sudo systemctl start fail2ban
 sudo systemctl --user -M vaultwarden@ start vaultwarden.service   # back up
+# Alloy's private mount namespace gets the new /data mount without its
+# InaccessiblePaths= cover; a restart rebuilds it. Then check, as in §3.12:
+sudo systemctl restart alloy
+sudo nsenter -t "$(systemctl show alloy -p MainPID --value)" -m -S "$(id -u alloy)" -G "$(id -g alloy)" ls /data
+# → Permission denied
 ```
 
 Quadlet-survives-restart is the failure most likely to bite a week
@@ -569,6 +633,18 @@ sudo tail /var/lib/vaultwarden/caddy/logs/coraza-audit.log
   # → 0, twice
   ```
   `platform/main_test.go` enforces the same allow-list on every CI run.
+- **The e2e account reaches disposable only.** `verify`'s
+  `vaultwarden-e2e@` holds three roles, each under the condition
+  `only vault-disposable`, and nothing else:
+  ```sh
+  gcloud projects get-iam-policy vaultwarden-497422 --flatten=bindings[].members \
+    --filter='bindings.members:vaultwarden-e2e@' \
+    --format='value(bindings.role, bindings.condition.expression)'
+  # → iap.tunnelResourceAccessor, compute.osAdminLogin and
+  #   projects/vaultwarden-497422/roles/vaultwardenE2eHostKeys, each with
+  #   resource.name.endsWith("/instances/vault-disposable")
+  ```
+  `platform/main_test.go` pins this too.
 
 ### 3.12 Telemetry reaches watchtower, and nothing personal does
 
@@ -596,19 +672,37 @@ systemctl show alloy -p ActiveState -p NRestarts
 sudo nsenter -t "$(systemctl show alloy -p MainPID --value)" -m -S "$(id -u alloy)" -G "$(id -g alloy)" ls /data
 ```
 
-Then make the lines that must not leak:
+Then make the lines that must not leak. `verify` makes three, all carrying
+its run's marker (in its job summary): `nobody-<marker>@example.com`,
+`not-a-password-<marker>` and `e2e-realip-<marker>@example.com`. By hand:
 
 1. On the web vault, fail a login with a made-up email
    (`nobody-<today>@example.com`).
-2. Type a made-up "password" (`not-a-password-<today>`) into the email
-   field, and fail again.
+2. Send a made-up "password" (`not-a-password-<today>`) as the username, and
+   fail again. Today's web vault refuses a username that isn't an address
+   before sending anything, so use the API, through an IAP tunnel as in §3.3
+   (the made-up `password` is a placeholder hash, not a password):
+   ```sh
+   curl -sS -o /dev/null -w '%{http_code}\n' \
+     --resolve disposable.vault.jasonrossmedia.com:8443:127.0.0.1 \
+     https://disposable.vault.jasonrossmedia.com:8443/identity/connect/token \
+     -H 'Device-Type: 14' --data-urlencode grant_type=password \
+     --data-urlencode "username=not-a-password-$(date +%F)" \
+     --data-urlencode password=bm90LWEtcmVhbC1oYXNo \
+     --data-urlencode 'scope=api offline_access' --data-urlencode client_id=web \
+     --data-urlencode deviceType=14 --data-urlencode "deviceIdentifier=$(uuidgen)" \
+     --data-urlencode deviceName=manual
+   # → 400
+   ```
 
 In Grafana Explore (`Loki (jasonmross)`, `Mimir (jasonmross)`), with
-`H` = `vault-disposable`:
+`H` = `vault-disposable`, from the start of the run:
 
-- `{host="H"} |= "nobody-"` and `{host="H"} |= "not-a-password"`: nothing.
+- `{host="H"} |= "nobody-"`, `{host="H"} |= "not-a-password"` and
+  `{host="H"} |= "e2e-realip-"`: nothing.
 - `{host="H"} |= "Username:"` and `{host="H"} |= "IP: "`: nothing.
-- `loki_process_custom_vaultwarden_failed_logins{host="H"}` rose by 2.
+- `loki_process_custom_vaultwarden_failed_logins{host="H"}` rose by 2 by hand,
+  or by 3 for a `verify` run.
 - `sum by (unit, container) (count_over_time({host="H"}[1h]))`: only units
   `alloy/config.alloy` allows (its `not_allowed` rule).
 - `count by (job) (up{host="H"})`: `integrations/unix`, `alloy`, `caddy`
