@@ -1,31 +1,47 @@
 name: Deploy toolchain + GCP auth
 description: |
-  Installs pinned, checksum-verified tools and (optionally) authenticates
-  gcloud + ADC with the deployer SA key.
+  Installs pinned, checksum-verified tools and authenticates gcloud + ADC in
+  one of two ways, or not at all:
+    credentials        the deployer SA's JSON key (secrets.GCP_DEPLOYER_KEY)
+    workload-identity  no key: the runner's GKE Workload Identity, from the
+                       metadata server (deploy.yml's verify job, on the
+                       vaultwarden-e2e runner)
+  Pass neither for no GCP access (ci.yml).
 
-  Every download is pinned to a version at least two weeks old when chosen
-  and verified against a hard-coded SHA-256. Bumping a tool means changing
-  its version AND hash together. Sources of the hashes:
+  Every download is pinned to an exact release and verified against a
+  hard-coded SHA-256. Bumping a tool means changing its version AND hash
+  together. Sources of the hashes:
     go      go.dev/dl/?mode=json&include=all
     pulumi  pulumi-<v>-checksums.txt on the GitHub release
-    gcloud  computed from the official tarball on 2026-10-15 (Google publishes
-            no checksum file for it)
-    alloy   SHA256SUMS on the GitHub release. The exception to the age rule:
-            CI checks with the release the hosts run, so the version and hash
-            are read from ansible/group_vars/all.yml (alloy_version,
-            alloy_zip_sha256), watchtower's pin
+    gcloud  computed from the official tarball on 2026-11-03 (Google publishes
+            no checksum file for it); its MD5 and size matched the
+            cloud-sdk-release bucket's object metadata
+    alloy   SHA256SUMS on the GitHub release. CI checks with the release the
+            hosts run, so the version and hash are read from
+            ansible/group_vars/all.yml (alloy_version, alloy_zip_sha256),
+            watchtower's pin
+
+  gcloud is at least 590.0.1: older releases' `start-iap-tunnel
+  --listen-on-stdin` stops reading its stdin after a few hundred KB, which
+  hung Ansible's pipelined modules over IAP for silverbullet-deployment
+  (its scripts/install-gcloud.sh).
 
   Composite actions have no post step, so a job that passes `credentials`
   must end with the cleanup step shown in deploy.yml (`if: always()`).
+  `workload-identity` writes no key and leaves nothing to remove.
 
 inputs:
   tools:
     description: Space-separated subset of "go pulumi gcloud ansible alloy"
     required: true
   credentials:
-    description: Deployer SA JSON key (secrets.GCP_DEPLOYER_KEY). Omit for no GCP auth.
+    description: Deployer SA JSON key (secrets.GCP_DEPLOYER_KEY). Omit it, and leave workload-identity off, for no GCP auth.
     required: false
     default: ""
+  workload-identity:
+    description: '"true" to use the runner''s Workload Identity account from the metadata server instead of a key. Needs gcloud in tools; not with credentials.'
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -38,8 +54,8 @@ runs:
         GO_SHA256: 708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
         PULUMI_VERSION: "3.266.0"
         PULUMI_SHA256: 05c42a7bf80b9aa0299773f4edd750eb8e1dcd8fbd52d99c3578f38a7de21262
-        GCLOUD_VERSION: "586.0.0"
-        GCLOUD_SHA256: 6c774c76793eedd501150b59da653610fbe3eaac169e822965b722de75a2f001
+        GCLOUD_VERSION: "592.0.0"
+        GCLOUD_SHA256: 2d841a23a681ab94486af6841e5f1cd123cd300fb8c4be6ba5b51350fca3d50b
         ANSIBLE_CORE_VERSION: "2.20.7"
       run: |
         set -euo pipefail
@@ -52,9 +68,9 @@ runs:
           echo "$2  $3" | sha256sum -c --quiet -
         }
 
-        apt_deps="jq openssh-client"
+        apt_deps="ca-certificates curl jq openssh-client"
         [[ " $TOOLS " == *" ansible "* ]] && apt_deps+=" python3-venv"
-        if ! command -v jq >/dev/null || ! command -v ssh >/dev/null || [[ " $TOOLS " == *" ansible "* ]]; then
+        if ! command -v curl >/dev/null || ! command -v jq >/dev/null || ! command -v ssh >/dev/null || [[ " $TOOLS " == *" ansible "* ]]; then
           sudo=""
           [[ "$(id -u)" == 0 ]] || sudo=sudo
           export DEBIAN_FRONTEND=noninteractive
@@ -83,6 +99,7 @@ runs:
               fetch "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" \
                 "$GCLOUD_SHA256" "${tools_dir}/gcloud.tgz"
               tar -C "$tools_dir" -xzf "${tools_dir}/gcloud.tgz"
+              rm -f "${tools_dir}/gcloud.tgz"
               echo "${tools_dir}/google-cloud-sdk/bin" >>"$GITHUB_PATH"
               # Job-private gcloud config; nothing lands in a shared $HOME.
               echo "CLOUDSDK_CONFIG=${RUNNER_TEMP}/gcloud-config" >>"$GITHUB_ENV"
@@ -121,8 +138,13 @@ runs:
       shell: bash
       env:
         GCP_KEY: ${{ inputs.credentials }}
+        WORKLOAD_IDENTITY: ${{ inputs.workload-identity }}
       run: |
         set -euo pipefail
+        if [[ "$WORKLOAD_IDENTITY" == true ]]; then
+          echo "pass credentials or workload-identity, not both" >&2
+          exit 1
+        fi
         umask 077
         key="${RUNNER_TEMP}/gcp-deployer.json"
         printf '%s' "$GCP_KEY" >"$key"
@@ -133,3 +155,27 @@ runs:
         gcloud config set project vaultwarden-497422 --quiet
         echo "GOOGLE_APPLICATION_CREDENTIALS=${key}" >>"$GITHUB_ENV"
         echo "CLOUDSDK_CORE_PROJECT=vaultwarden-497422" >>"$GITHUB_ENV"
+
+    # No key and no file: gcloud and ADC both find the GKE metadata server,
+    # which hands out tokens for the Google account the job's Kubernetes
+    # service account maps to. This only checks that there is one, so a job
+    # on the wrong runner fails here rather than half-way through.
+    - name: Use the runner's Workload Identity
+      if: inputs.workload-identity == 'true'
+      shell: bash
+      env:
+        TOOLS: ${{ inputs.tools }}
+      run: |
+        set -euo pipefail
+        if [[ " $TOOLS " != *" gcloud "* ]]; then
+          echo "workload-identity needs gcloud in tools" >&2
+          exit 1
+        fi
+        gcloud config set project vaultwarden-497422 --quiet
+        echo "CLOUDSDK_CORE_PROJECT=vaultwarden-497422" >>"$GITHUB_ENV"
+        account="$(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
+        if [[ -z "$account" ]]; then
+          echo "no Google account from the metadata server: is this job on the vaultwarden-e2e runner?" >&2
+          exit 1
+        fi
+        echo "gcloud runs as ${account} (Workload Identity, no key)"
