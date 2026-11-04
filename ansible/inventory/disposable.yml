@@ -10,6 +10,11 @@ all:
     vault-disposable:
       ansible_host: vault-disposable
       ansible_python_interpreter: /usr/bin/python3
+      # Every disposable deploy opens signups for deploy.yml's verify job,
+      # which closes them itself; an hour covers a runner node starting from
+      # zero. A host var on purpose: group_vars/all.yml next to the playbook
+      # (30) outranks the inventory's group vars below, not its host vars.
+      vaultwarden_signups_window_minutes: 60
   vars:
     stack: disposable
     gce_zone: us-east1-b

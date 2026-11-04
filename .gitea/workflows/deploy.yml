@@ -1,4 +1,5 @@
-# Deploy one stack: Caddy image -> Pulumi (VM + disk) -> Ansible over IAP.
+# Deploy one stack: Caddy image -> Pulumi (VM + disk) -> Ansible over IAP,
+# then, for disposable only, the end-to-end checks.
 #
 #   workflow_dispatch -> disposable (any ref) or production (main only)
 #
@@ -6,11 +7,15 @@
 # cycle (runbook §2.9), so a push has nothing to deploy to; production changes
 # when you choose to dispatch it.
 #
-# Authenticates with the deployer SA key in the repo secret GCP_DEPLOYER_KEY
-# (Gitea 1.27 has no Actions OIDC). That SA can rebuild the VM and read the
+# image, infra and configure authenticate with the deployer SA key in the repo
+# secret GCP_DEPLOYER_KEY: Gitea 28.2's Actions still issue no OIDC token that
+# GCP accepts (go-gitea/gitea#33681). That SA can rebuild the VM and read the
 # secrets Ansible renders; it cannot grant IAM, touch DNS, or read platform
-# state -- see platform/main.go. Every job that authenticates ends with the
-# key-removal step, because composite actions have no post hook.
+# state -- see platform/main.go. Every job that authenticates with it ends
+# with the key-removal step, because composite actions have no post hook.
+#
+# verify holds no key: its runner gets the vaultwarden-e2e@ account through
+# GKE Workload Identity, and that account reaches vault-disposable alone.
 name: deploy
 
 on:
@@ -26,7 +31,7 @@ on:
         type: boolean
         default: false
       signups:
-        description: Open account signups to create the first account on a fresh stack. Registration works only through an IAP tunnel (runbook §2.8) and closes itself after 30 min; any later deploy closes it too
+        description: Production only (disposable always opens them for the verify job, which closes them). Open account signups to create the first account on a fresh stack. Registration works only through an IAP tunnel (runbook §2.8) and closes itself after 30 min; any later deploy closes it too
         type: boolean
         default: false
 
@@ -141,17 +146,80 @@ jobs:
     # Same pool as infra: the node infra just freed is still up (scale-down
     # waits ~10 min), so this skips booting a burst node from zero.
     runs-on: heavy
+    outputs:
+      started: ${{ steps.start.outputs.epoch }}
     steps:
+      # verify's telemetry check counts sudo's lines "since this deploy".
+      - name: Note when configure started
+        id: start
+        run: echo "epoch=$(date +%s)" >>"$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.gitea/actions/setup
         with:
           tools: gcloud ansible
           credentials: ${{ secrets.GCP_DEPLOYER_KEY }}
+      # disposable always opens signups, for verify's test account; Caddy
+      # still lets registration in from IAP's range only, and verify closes
+      # the window and disarms its timer when it's done (or the timer does,
+      # after vaultwarden_signups_window_minutes). Production follows the
+      # signups input.
       - name: Ansible over IAP
         run: |
+          signups="$SIGNUPS"
+          if [[ "$STACK" == disposable ]]; then
+            signups=true
+          fi
           scripts/ansible-iap.sh "$STACK" \
             -e "caddy_image=${IMAGE}:${STACK}" \
-            -e "vaultwarden_signups_allowed=${SIGNUPS}"
+            -e "vaultwarden_signups_allowed=${signups}"
       - name: Remove deployer key
         if: always()
         run: rm -f "${RUNNER_TEMP}/gcp-deployer.json"; rm -rf "${RUNNER_TEMP}/gcloud-config"
+
+  # End-to-end checks of disposable: runbook §2.8, everything in §3 that can
+  # prove itself, and the restore drill (scripts/e2e-disposable.sh; the
+  # runbook lists what stays manual). Never production, four times over: the
+  # `if:` below, the script's refusal of any other STACK, a hostname check on
+  # the VM, and an identity whose every grant is conditioned to
+  # vault-disposable (platform/main.go, grantE2E).
+  verify:
+    needs: configure
+    if: (inputs.stack || 'disposable') == 'disposable'
+    # The repo-scoped runner whose jobs run as the vaultwarden-e2e@ Google
+    # account through GKE Workload Identity (the gitea repo's infra/). No key.
+    runs-on: vaultwarden-e2e
+    timeout-minutes: 50
+    # The browsers and their libraries come with the image; bump the tag with
+    # @playwright/test in e2e/package.json. It runs as root, which the IAP
+    # tunnel on 127.0.0.1:443 needs.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-resolute
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.gitea/actions/setup
+        with:
+          tools: gcloud
+          workload-identity: "true"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+          package_json_file: e2e/package.json
+      - name: Install the browser tests
+        working-directory: e2e
+        run: pnpm install --frozen-lockfile
+      # One step: a tunnel opened in one step is gone by the next.
+      - name: Check disposable end to end
+        env:
+          DEPLOY_STARTED: ${{ needs.configure.outputs.started }}
+        run: scripts/e2e-disposable.sh
+      # Only what the script put in e2e/artifacts/ after deleting the error
+      # contexts and finding the run's password in none of the rest. Never
+      # traces: they record what was typed, and this repo is public.
+      - name: Upload screenshots and the HTML report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-disposable-report
+          path: e2e/artifacts/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -77,6 +77,7 @@ iap_range: 35.235.240.0/20
 #   skip it), even if no signups=false redeploy follows.
 # - Closing it mails root the list of every account in the vault.
 vaultwarden_signups_allowed: false
+# disposable's inventory sets 60 for its host (deploy.yml's verify job).
 vaultwarden_signups_window_minutes: 30
 
 # dnf-automatic maintenance window.
