@@ -1,0 +1,14 @@
+---
+# Restart, not `wg syncconf`: a changed Address, MTU or Endpoint needs
+# wg-quick. Alloy rides it out (loki.write retries). Not fatal: tasks/main.yml
+# checks the tunnel came up, and only warns.
+- name: restart watchtower tunnel
+  ansible.builtin.systemd_service:
+    name: "wg-quick@{{ watchtower_tunnel_interface }}.service"
+    state: restarted
+    daemon_reload: true
+  failed_when: false
+
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

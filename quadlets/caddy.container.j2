@@ -27,9 +27,13 @@ ContainerName=caddy
 AutoUpdate=registry
 Network=vaultwarden.network
 
-# No PublishPort=. 443 on the host is caddy.socket, passed in as fd 3 (IPv4)
-# and fd 4 (IPv6). A published port would hide every client's address
+# No PublishPort= for 443: on the host it's caddy.socket, passed in as fd 3
+# (IPv4) and fd 4 (IPv6). A published port would hide every client's address
 # behind rootless Podman's port forwarder.
+#
+# Only Caddy's metrics site, for the host's Alloy (ansible/roles/logship), on
+# loopback: nothing off the host reaches it, and it has no clients to hide.
+PublishPort=127.0.0.1:2020:2020
 
 # The distroless image runs Caddy as nonroot (65532). keep-id maps the host
 # vault_user onto that uid, so the bind-mounted data/log dirs (owned by

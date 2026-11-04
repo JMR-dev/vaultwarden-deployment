@@ -1,0 +1,7 @@
+# The counters alloy/config.alloy keeps for lines it then drops, or ships:
+# what scrub.log should add to each. One series each (same labels per group).
+^loki_process_custom_caddy_request_lines\{.*\} 2$
+^loki_process_custom_caddy_waf_matches\{.*\} 1$
+^loki_process_custom_fail2ban_bans\{.*\} 1$
+^loki_process_custom_vaultwarden_failed_logins\{.*\} 2$
+^loki_process_custom_vaultwarden_failed_2fa\{.*\} 3$

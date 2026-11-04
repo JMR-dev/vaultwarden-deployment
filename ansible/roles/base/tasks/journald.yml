@@ -1,5 +1,25 @@
 ---
 # Persistent, size-capped journal (files/journald-persistent.conf says why).
+
+# Made here, not left to journald: it would create this root:root, and the
+# systemd-journal group only arrives from systemd-tmpfiles at the next boot.
+# Until then Alloy, which reads through that group, can open no journal file and
+# still reports healthy with no lines. The setgid bit gives the group to every
+# file journald makes in here, the rootless user's journal included.
+- name: The journal's directory, for the systemd-journal group
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: "2755"
+
+# What the next boot would do, for a host that already has the directory: its
+# machine directory and active journal file get the group too.
+- name: Journal files already there get the systemd-journal group
+  ansible.builtin.command: systemd-tmpfiles --create --prefix=/var/log/journal
+  changed_when: false
+
 - name: Ensure the journald drop-in directory exists
   ansible.builtin.file:
     path: /etc/systemd/journald.conf.d

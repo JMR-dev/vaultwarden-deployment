@@ -10,13 +10,17 @@ description: |
     pulumi  pulumi-<v>-checksums.txt on the GitHub release
     gcloud  computed from the official tarball on 2026-10-15 (Google publishes
             no checksum file for it)
+    alloy   SHA256SUMS on the GitHub release. The exception to the age rule:
+            CI checks with the release the hosts run, so the version and hash
+            are read from ansible/group_vars/all.yml (alloy_version,
+            alloy_zip_sha256), watchtower's pin
 
   Composite actions have no post step, so a job that passes `credentials`
   must end with the cleanup step shown in deploy.yml (`if: always()`).
 
 inputs:
   tools:
-    description: Space-separated subset of "go pulumi gcloud ansible"
+    description: Space-separated subset of "go pulumi gcloud ansible alloy"
     required: true
   credentials:
     description: Deployer SA JSON key (secrets.GCP_DEPLOYER_KEY). Omit for no GCP auth.
@@ -88,6 +92,22 @@ runs:
               python3 -m venv "${tools_dir}/ansible"
               "${tools_dir}/ansible/bin/pip" install -q "ansible-core==${ANSIBLE_CORE_VERSION}"
               echo "${tools_dir}/ansible/bin" >>"$GITHUB_PATH"
+              ;;
+            alloy)
+              pins="${GITHUB_WORKSPACE}/ansible/group_vars/all.yml"
+              alloy_version="$(awk '$1 == "alloy_version:" {print $2}' "$pins")"
+              alloy_sha256="$(awk '$1 == "alloy_zip_sha256:" {print $2}' "$pins")"
+              if [[ -z "$alloy_version" || -z "$alloy_sha256" ]]; then
+                echo "alloy_version or alloy_zip_sha256 missing from ${pins}" >&2
+                exit 1
+              fi
+              fetch "https://github.com/grafana/alloy/releases/download/${alloy_version}/alloy-linux-amd64.zip" \
+                "$alloy_sha256" "${tools_dir}/alloy.zip"
+              python3 -m zipfile -e "${tools_dir}/alloy.zip" "${tools_dir}/alloy"
+              mv "${tools_dir}/alloy/alloy-linux-amd64" "${tools_dir}/alloy/alloy"
+              chmod 0755 "${tools_dir}/alloy/alloy"
+              rm -f "${tools_dir}/alloy.zip"
+              echo "${tools_dir}/alloy" >>"$GITHUB_PATH"
               ;;
             *)
               echo "unknown tool: $tool" >&2

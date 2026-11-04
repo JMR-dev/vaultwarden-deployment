@@ -25,6 +25,11 @@ table inet vaultwarden_filter {
 
         iif "lo" accept
 
+        # watchtower's tunnel (roles/tunnel) carries this host's telemetry
+        # out; the replies are established above. Nothing else comes in over
+        # it. Matched by name, so the rule holds whether or not it's up.
+        iifname "{{ watchtower_tunnel_interface }}" counter drop
+
         # ICMP / ICMPv6: diagnostics, and IPv6 can't work without neighbour
         # discovery and packet-too-big.
         ip protocol icmp accept

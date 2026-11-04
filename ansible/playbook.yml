@@ -44,6 +44,9 @@
       tags: [mail]
     - role: nftables
       tags: [nftables, network]
+    # After nftables, so the tunnel never comes up without its drop rule.
+    - role: tunnel
+      tags: [tunnel, telemetry]
     - role: fail2ban
       tags: [fail2ban]
     - role: dnf_automatic
@@ -54,3 +57,7 @@
       tags: [quadlets]
     - role: backup
       tags: [backup]
+    # After quadlets, so Caddy's metrics site is up for its first scrape, and
+    # last, so nothing here can come between a host and its backups.
+    - role: logship
+      tags: [logship, telemetry]

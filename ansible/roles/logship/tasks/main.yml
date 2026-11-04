@@ -1,0 +1,48 @@
+---
+# Grafana Alloy: ships this host's journal (drop-by-default, scrubbed) and its
+# metrics to watchtower, through roles/tunnel's wg-watchtower. What it sends
+# is alloy/config.alloy; the contract is the watchtower-observability-stack
+# repo's docs/client-telemetry.md.
+#
+# A host binary under a sandboxed system unit, not a quadlet: the quadlets
+# here are rootless, and Alloy reads the system journal. The release zip is
+# pinned by sha256 (group_vars); no third-party repo. Its handler restarts
+# Alloy and nothing else, so no change here restarts Vaultwarden or Caddy.
+#
+# Alloy runs only while roles/tunnel has left a tunnel config on the host.
+# Without one (no peer), or with observability_enabled false, it is stopped
+# and its files removed, /var/lib/alloy with its queue and journal position. If
+# roles/tunnel couldn't read the peer for any reason but a missing or empty
+# secret, nothing here runs: Alloy goes on as it is, and the next deploy brings
+# any change. A deploy never fails over telemetry: a failed install (GitHub
+# down, a full disk), a config Alloy refuses, a bad start and the checks at the
+# end are all warnings. CI's alloy job is what stops a bad config; on a host,
+# the one already there keeps running.
+
+- name: Is there a tunnel
+  ansible.builtin.stat:
+    path: "/etc/wireguard/{{ watchtower_tunnel_interface }}.conf"
+    get_checksum: false
+  register: logship_tunnel_conf
+
+- name: Whether Alloy runs
+  ansible.builtin.set_fact:
+    logship_enabled: "{{ (observability_enabled | default(false) | bool) and logship_tunnel_conf.stat.exists }}"
+
+- name: Alloy, or a warning if any of this fails
+  when: not tunnel_read_failed | default(false) | bool
+  block:
+    - name: Install and run Alloy
+      ansible.builtin.import_tasks: present.yml
+      when: logship_enabled | bool
+
+    - name: Stop and remove Alloy
+      ansible.builtin.import_tasks: absent.yml
+      when: not logship_enabled | bool
+  rescue:
+    - name: Warn when Alloy can't be set up
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: setting up Alloy failed at "{{ ansible_failed_task.name }}".
+          {{ inventory_hostname }} ships no new telemetry until a later deploy
+          gets past that; the deploy carries on.

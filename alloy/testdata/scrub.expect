@@ -1,0 +1,3 @@
+keep:163 [REDACTED-USER] : TTY=pts/0 ; PWD=/[REDACTED-PATH] ; USER=[REDACTED-USER] ; ENV=[REDACTED-COMMAND]
+keep:164 User [REDACTED-USER] from [REDACTED-IP] not allowed because not listed in AllowUsers
+keep:165 User [REDACTED-USER] from [REDACTED-IP] not allowed because not listed in AllowUsers

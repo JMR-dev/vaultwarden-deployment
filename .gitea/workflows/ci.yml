@@ -51,6 +51,26 @@ jobs:
             ansible-playbook -i "inventory/${stack}.yml" playbook.yml --syntax-check
           done
           ansible-lint
+      - name: The tunnel role's checks, over made-up peer configs
+        working-directory: ansible
+        run: ansible-playbook -i localhost, tests/tunnel-peer.yml
+
+  alloy:
+    # The telemetry config's format and validity, and its scrub run by Alloy
+    # itself over a fixture of made-up lines: nothing on watchtower scrubs, so
+    # these rules are all that stands between this host's logs and storage.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.gitea/actions/setup
+        with:
+          tools: alloy
+      - name: alloy fmt, validate and the scrub fixture
+        run: |
+          alloy fmt --test alloy/config.alloy || { echo "alloy fmt needed: alloy fmt -w alloy/config.alloy"; exit 1; }
+          alloy validate alloy/config.alloy
+          scripts/check-alloy-scrub.sh alloy/config.alloy alloy/testdata/scrub.log
+          scripts/check-alloy-scrub.sh alloy/config.alloy alloy/testdata/shared.log
 
   shell:
     runs-on: ubuntu-latest

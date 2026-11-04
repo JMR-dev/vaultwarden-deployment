@@ -1,0 +1,20 @@
+# Managed by Ansible (roles/tunnel): this host's watchtower agent peer, from
+# Secret Manager {{ watchtower_gcp_project }}/{{ watchtower_peer_secret }},
+# checked and normalised:
+#   - DNS= dropped: the tunnel is split, so the host keeps its own resolver
+#     (and wg-quick would want resolvconf for it).
+#   - MTU and PersistentKeepalive added if missing (watchtower sets both):
+#     WireGuard inside GCE's 1460-byte MTU, and a keepalive that holds GCE's
+#     and nftables' connection state open for the replies.
+{% set tunnel_conf = tunnel_peer.stdout %}
+{% set tunnel_has_mtu = tunnel_conf is search('(?im)^[ \t]*MTU[ \t]*=') %}
+{% set tunnel_has_keepalive = tunnel_conf is search('(?im)^[ \t]*PersistentKeepalive[ \t]*=') %}
+{% for line in tunnel_conf.split('\n') if line is not match('(?i)[ \t]*DNS[ \t]*=') %}
+{{ line }}
+{% if line is match('(?i)[ \t]*\\[Interface\\]') and not tunnel_has_mtu %}
+MTU = {{ watchtower_tunnel_mtu }}
+{% endif %}
+{% if line is match('(?i)[ \t]*\\[Peer\\]') and not tunnel_has_keepalive %}
+PersistentKeepalive = {{ watchtower_tunnel_keepalive }}
+{% endif %}
+{% endfor %}

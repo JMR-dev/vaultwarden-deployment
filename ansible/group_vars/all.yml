@@ -82,3 +82,43 @@ vaultwarden_signups_window_minutes: 30
 # dnf-automatic maintenance window.
 dnf_reboot_window: "04:00"
 dnf_reboot_dow: "Tue"
+
+# Telemetry to watchtower (the watchtower-observability-stack repo; its
+# docs/client-telemetry.md is the contract). roles/tunnel makes this host one
+# of watchtower's agent peers over WireGuard, and roles/logship's Alloy ships
+# the journal, drop-by-default (alloy/config.alloy), and host metrics through
+# it. Switched per stack by observability_enabled in inventory/<stack>.yml
+# (not here: playbook group_vars would override the inventory's value). Off,
+# or with no peer, both roles remove what they installed.
+#
+# The peer's config is a secret in watchtower's project, one per stack, read
+# on the controller by the deploy's identity: vaultwarden-deployer may read
+# these two and nothing else there (watchtower's scripts/bootstrap.sh).
+watchtower_gcp_project: watchtower-observe
+watchtower_peer_secret: "wireguard-vaultwarden-{{ stack }}-peer"
+# The env label: the stack, production or disposable.
+observability_env: "{{ stack }}"
+# wg-easy's range, the only route the tunnel may carry. A config routing
+# anything else is refused (roles/tunnel).
+watchtower_tunnel_cidr: 10.8.0.0/24
+# wg-quick names the interface after its config file; roles/nftables drops
+# anything that comes in on it.
+watchtower_tunnel_interface: wg-watchtower
+# Added when the config lacks them (watchtower sets both).
+watchtower_tunnel_keepalive: 25
+watchtower_tunnel_mtu: 1380
+
+# watchtower.jasonmross.dev resolves to 10.8.0.1, inside the tunnel. Agents
+# may only write, and only into this tenant (watchtower's Caddy forces it).
+watchtower_loki_url: https://watchtower.jasonmross.dev:3100/loki/api/v1/push
+watchtower_mimir_url: https://watchtower.jasonmross.dev:8080/api/v1/push
+watchtower_tenant: jasonmross
+
+# Grafana Alloy, the release zip for x86_64 from GitHub, pinned by the sha256
+# its release publishes in SHA256SUMS. A bump changes both; CI's checks
+# (.gitea/actions/setup) read them from here too.
+alloy_version: v1.21.3
+alloy_zip_sha256: 50d23af2d0f98c00beac6ce9a365693e60f87fb76b6cad6fe1d161e80588af6d
+# A 2 GB host: the cap keeps an Alloy OOM from taking the vault with it.
+alloy_memory_max: 256M
+alloy_gomemlimit: 200MiB
