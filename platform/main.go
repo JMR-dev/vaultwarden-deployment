@@ -2,8 +2,11 @@
 // CI-run app stack (../pulumi) must NOT be able to change.
 //
 // Why a separate project: CI authenticates with a long-lived SA key (Gitea
-// 1.27 can't mint Actions OIDC tokens), so that key's blast radius is whatever
-// the deployer SA can do. Every IAM grant, every service account, DNS, the
+// 28.2's Actions still issue no OIDC token that GCP's Workload Identity
+// Federation accepts: go-gitea/gitea#33681), so that key's blast radius is
+// whatever the deployer SA can do. The one keyless identity is the disposable
+// stack's end-to-end test account (grantE2E), which Gitea's own GKE runner
+// gets through Workload Identity. Every IAM grant, every service account, DNS, the
 // network, the registry, the R2 buckets and the Resend mail domain therefore
 // live here, applied by the
 // owner with their own ADC. The deployer can create and replace the VM and
@@ -64,6 +67,61 @@ const (
 	ARRepoID    = "vaultwarden"
 	DeployerID  = "vaultwarden-deployer"
 )
+
+// The disposable stack's end-to-end test identity (deploy.yml's verify job,
+// scripts/e2e-disposable.sh). See grantE2E.
+const (
+	E2EID = "vaultwarden-e2e"
+	// E2EInstance is the only VM it may reach: the disposable stack's
+	// ("vault-" + stack, as in ../pulumi). Never production's.
+	E2EInstance = "vault-disposable"
+	// E2ERoleID is the custom role for pinning the VM's SSH host keys.
+	E2ERoleID = "vaultwardenE2eHostKeys"
+	// E2EWorkloadIdentityMember is the Kubernetes service account in Gitea's
+	// GKE cluster (project gitea-496920) whose pods run as E2EID: the
+	// repo-scoped `vaultwarden-e2e` runner's jobs, in their own namespace.
+	E2EWorkloadIdentityMember = "serviceAccount:gitea-496920.svc.id.goog[gitea-jobs-vaultwarden/vaultwarden-e2e]"
+)
+
+// E2EProjectRoles are the predefined roles the e2e identity holds, each only
+// under E2ECondition: SSH over IAP, as root (the checks need sudo).
+var E2EProjectRoles = []string{
+	"roles/iap.tunnelResourceAccessor",
+	"roles/compute.osAdminLogin",
+}
+
+// E2ERolePermissions are E2ERoleID's whole content: what
+// scripts/lib/iap-ssh.sh needs to read the VM's published host keys, plus
+// instances.get, which gcloud's IAP tunnel may call to look the VM up.
+var E2ERolePermissions = []string{
+	"compute.instances.get",
+	"compute.instances.getGuestAttributes",
+}
+
+// E2ECondition limits every grant to E2EInstance. The VM is destroyed every
+// disposable cycle, and an instance-level binding would go with it, so the
+// grants are project-level with this condition instead.
+//
+// One expression for both services, because only the tail of the name is
+// common to them:
+//   - Compute Engine names an instance projects/<id>/zones/<zone>/instances/<name>
+//     (https://docs.cloud.google.com/iam/docs/conditions-resource-attributes,
+//     "Resource name"; https://docs.cloud.google.com/iam/docs/conditions-attribute-reference
+//     shows startsWith on that form). OS Login's osAdminLogin and the custom
+//     role's permissions are checked on this resource.
+//   - IAP TCP forwarding's tunnel resource is
+//     projects/<number>/iap_tunnel/zones/<zone>/instances/<name> (the path of
+//     its setIamPolicy API, https://docs.cloud.google.com/iap/docs/using-tcp-forwarding).
+//     The resource-attributes page lists its type, iap.googleapis.com/TunnelInstance,
+//     but no resource-name format: that IAP evaluates resource.name this way
+//     is NOT confirmed by Google's docs.
+//
+// Either way it fails closed: "If part of a condition uses an attribute that
+// isn't available for a resource, then that part of the condition is never
+// interpreted as granting access" (conditions-attribute-reference). The
+// owner's smoke dispatch proves it (allowed on vault-disposable, refused on
+// vault-production) before the first real run.
+const E2ECondition = `resource.name.endsWith("/instances/` + E2EInstance + `")`
 
 // DeployerProjectRoles are the only project-level roles the CI deployer gets.
 // compute.instanceAdmin.v1 covers instances, disks, snapshot policies, using
@@ -338,6 +396,10 @@ func program(ctx *pulumi.Context) error {
 	if err := grantCaddyDNS(ctx, cfg, zone.Name); err != nil {
 		return err
 	}
+	e2e, err := grantE2E(ctx, cfg)
+	if err != nil {
+		return err
+	}
 
 	mail, err := newMailDomain(ctx, cfg, zone.Name)
 	if err != nil {
@@ -357,6 +419,7 @@ func program(ctx *pulumi.Context) error {
 	ctx.Export("networkTag", pulumi.String(NetworkTag))
 	ctx.Export("caddyImage", pulumi.Sprintf("%s-docker.pkg.dev/%s/%s/caddy", repo.Location, cfg.Project, repo.RepositoryId))
 	ctx.Export("deployerEmail", deployer.Email)
+	ctx.Export("e2eEmail", e2e.Email)
 	ctx.Export("mailDomain", mail.Name)
 	ctx.Export("mailDomainId", mail.ID())
 	ctx.Export("stacks", stackOutputs)
@@ -615,6 +678,80 @@ func grantCaddyDNS(ctx *pulumi.Context, cfg *Config, zoneName string) error {
 		Member:  member,
 	})
 	return err
+}
+
+// grantE2E is the identity of deploy.yml's verify job, which tests the
+// disposable stack end to end over IAP (scripts/e2e-disposable.sh). It holds
+// no key: Gitea's repo-scoped `vaultwarden-e2e` runner puts its jobs in their
+// own GKE namespace as a Kubernetes service account that Workload Identity
+// maps to this account (the gitea repo's infra/).
+//
+// It must never be able to reach production or a secret, so:
+//   - every role is granted under E2ECondition (vault-disposable only), and
+//     the deployer's project-wide roles are deliberately not copied;
+//   - no Secret Manager grant: the restore drill uses the host's own restic
+//     credentials through sudo, so none reach the runner;
+//   - the only principal that may act as it is that one Kubernetes service
+//     account.
+//
+// main_test.go pins all three.
+func grantE2E(ctx *pulumi.Context, cfg *Config) (*serviceaccount.Account, error) {
+	account, err := serviceaccount.NewAccount(ctx, "e2e", &serviceaccount.AccountArgs{
+		Project:     pulumi.String(cfg.Project),
+		AccountId:   pulumi.String(E2EID),
+		DisplayName: pulumi.String("vaultwarden disposable end-to-end tests"),
+		Description: pulumi.String("deploy.yml's verify job, through GKE Workload Identity (no key). Grants live in platform/ and are all conditioned to " + E2EInstance + "."),
+	})
+	if err != nil {
+		return nil, err
+	}
+	member := pulumi.Sprintf("serviceAccount:%s", account.Email)
+
+	hostKeys, err := projects.NewIAMCustomRole(ctx, "e2e-host-keys", &projects.IAMCustomRoleArgs{
+		Project:     pulumi.String(cfg.Project),
+		RoleId:      pulumi.String(E2ERoleID),
+		Title:       pulumi.String("vaultwarden e2e: read a VM's SSH host keys"),
+		Description: pulumi.String("Only instances.get and instances.getGuestAttributes, for pinning the SSH host keys the guest agent publishes. Granted with a condition, never project-wide."),
+		Permissions: pulumi.ToStringArray(E2ERolePermissions),
+		Stage:       pulumi.String("GA"),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	type grant struct {
+		name string
+		role pulumi.StringInput
+	}
+	grants := []grant{{"host-keys", hostKeys.Name}}
+	for _, role := range E2EProjectRoles {
+		grants = append(grants, grant{strings.TrimPrefix(role, "roles/"), pulumi.String(role)})
+	}
+	for _, g := range grants {
+		if _, err := projects.NewIAMMember(ctx, "e2e-"+g.name, &projects.IAMMemberArgs{
+			Project: pulumi.String(cfg.Project),
+			Role:    g.role,
+			Member:  member,
+			Condition: &projects.IAMMemberConditionArgs{
+				Title:       pulumi.String("only " + E2EInstance),
+				Description: pulumi.String("The disposable stack's VM, nothing else (platform/main.go, E2ECondition)."),
+				Expression:  pulumi.String(E2ECondition),
+			},
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// Cross-project: the Workload Identity pool is Gitea's project's, the
+	// account is this one's.
+	if _, err := serviceaccount.NewIAMMember(ctx, "e2e-workload-identity", &serviceaccount.IAMMemberArgs{
+		ServiceAccountId: account.Name,
+		Role:             pulumi.String("roles/iam.workloadIdentityUser"),
+		Member:           pulumi.String(E2EWorkloadIdentityMember),
+	}); err != nil {
+		return nil, err
+	}
+	return account, nil
 }
 
 // newStack builds one app stack's long-lived pieces. The R2 bucket exists for

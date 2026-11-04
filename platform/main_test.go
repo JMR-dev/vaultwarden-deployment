@@ -38,7 +38,12 @@ func (m *mocks) NewResource(a pulumi.MockResourceArgs) (string, resource.Propert
 	case "gcp:compute/address:Address":
 		out["address"] = resource.NewStringProperty("203.0.113.9")
 	case "gcp:serviceaccount/account:Account":
-		out["email"] = resource.NewStringProperty(DeployerID + "@demo.iam.gserviceaccount.com")
+		// Each account its own email, so grants to one can't pass for another's.
+		email := a.Inputs["accountId"].StringValue() + "@demo.iam.gserviceaccount.com"
+		out["email"] = resource.NewStringProperty(email)
+		out["name"] = resource.NewStringProperty("projects/demo/serviceAccounts/" + email)
+	case "gcp:projects/iAMCustomRole:IAMCustomRole":
+		out["name"] = resource.NewStringProperty("projects/demo/roles/" + a.Inputs["roleId"].StringValue())
 	case "resend:index:Domain":
 		name := a.Inputs["name"].StringValue()
 		rr := func(fqdn, typ, value string, prio float64) resource.PropertyValue {
@@ -178,6 +183,110 @@ func TestDeployerHoldsOnlyAllowedRoles(t *testing.T) {
 		if str(r, "member") == deployerMember && str(r, "role") == "roles/storage.objectAdmin" {
 			t.Error("storage.objectAdmin must be bucket-scoped, not project-wide")
 		}
+	}
+}
+
+const (
+	e2eAccountName = "projects/demo/serviceAccounts/" + E2EID + "@demo.iam.gserviceaccount.com"
+	e2eMember      = "serviceAccount:" + E2EID + "@demo.iam.gserviceaccount.com"
+	e2eHostKeyRole = "projects/demo/roles/" + E2ERoleID
+)
+
+// The e2e identity is ambient to every job routed to its runner, so it must
+// reach vault-disposable and nothing else: exactly these three roles, each
+// once, each project-level under the one condition, and no grant of any other
+// kind (no secret, no bucket, no KMS key, no registry, no other account).
+func TestE2EHoldsOnlyConditionedGrants(t *testing.T) {
+	m := mustRun(t, baseConfig())
+	want := map[string]int{
+		"roles/iap.tunnelResourceAccessor": 0,
+		"roles/compute.osAdminLogin":       0,
+		e2eHostKeyRole:                     0,
+	}
+	for _, r := range m.recs {
+		if str(r, "member") != e2eMember {
+			continue
+		}
+		role := str(r, "role")
+		if r.typ != "gcp:projects/iAMMember:IAMMember" {
+			t.Errorf("%s (%s) grants the e2e account %q; it may hold only project-level, conditioned roles", r.name, r.typ, role)
+			continue
+		}
+		if _, ok := want[role]; !ok {
+			t.Errorf("%s grants the e2e account %q, which is not on its allow-list", r.name, role)
+			continue
+		}
+		want[role]++
+		cond := r.inputs["condition"]
+		if !cond.IsObject() {
+			t.Errorf("%s grants the e2e account %q with no condition: that's every VM in the project, production included", r.name, role)
+			continue
+		}
+		if got := str(rec{inputs: cond.ObjectValue()}, "expression"); got != `resource.name.endsWith("/instances/vault-disposable")` {
+			t.Errorf("%s: condition %q, want the disposable VM only", r.name, got)
+		}
+	}
+	for role, n := range want {
+		if n != 1 {
+			t.Errorf("want the e2e account to hold %q exactly once, got %d", role, n)
+		}
+	}
+}
+
+// The deployer's project-wide roles stay the deployer's: E2ECondition must
+// actually name disposable, and the allow-list must not drift towards them.
+func TestE2EConditionNamesOnlyDisposable(t *testing.T) {
+	if E2EInstance != "vault-disposable" {
+		t.Errorf("E2EInstance is %q; the e2e identity is for the disposable stack only", E2EInstance)
+	}
+	if strings.Contains(E2ECondition, "production") || !strings.Contains(E2ECondition, `"/instances/vault-disposable"`) {
+		t.Errorf("E2ECondition %q must match the disposable VM's name exactly, after a slash", E2ECondition)
+	}
+	for _, role := range E2EProjectRoles {
+		if role == "roles/compute.instanceAdmin.v1" {
+			t.Error("the e2e account must not get compute.instanceAdmin.v1 (it could rebuild or delete VMs)")
+		}
+	}
+}
+
+// Only reading the host keys: no instance in the project can be changed,
+// started, stopped or have its metadata (and so its SSH keys) rewritten.
+func TestE2EHostKeyRoleIsReadOnly(t *testing.T) {
+	m := mustRun(t, baseConfig())
+	roles := m.byType("gcp:projects/iAMCustomRole:IAMCustomRole")
+	found := 0
+	for _, r := range roles {
+		if str(r, "roleId") != E2ERoleID {
+			continue
+		}
+		found++
+		got := strs(r, "permissions")
+		if strings.Join(got, ",") != "compute.instances.get,compute.instances.getGuestAttributes" {
+			t.Errorf("custom role %s holds %v; want only compute.instances.get and compute.instances.getGuestAttributes", E2ERoleID, got)
+		}
+	}
+	if found != 1 {
+		t.Errorf("want 1 custom role %s, got %d", E2ERoleID, found)
+	}
+}
+
+// Only the verify job's Kubernetes service account, in Gitea's cluster, may
+// act as the e2e account, and nothing else holds a role on it.
+func TestE2EWorkloadIdentityIsTheOnlyWayIn(t *testing.T) {
+	m := mustRun(t, baseConfig())
+	found := 0
+	for _, r := range m.byType("gcp:serviceaccount/iAMMember:IAMMember") {
+		if str(r, "serviceAccountId") != e2eAccountName {
+			continue
+		}
+		found++
+		if role, member := str(r, "role"), str(r, "member"); role != "roles/iam.workloadIdentityUser" ||
+			member != "serviceAccount:gitea-496920.svc.id.goog[gitea-jobs-vaultwarden/vaultwarden-e2e]" {
+			t.Errorf("%s grants %q on the e2e account to %q; only workloadIdentityUser for the verify job's KSA is allowed", r.name, role, member)
+		}
+	}
+	if found != 1 {
+		t.Errorf("want exactly 1 grant on the e2e account (Workload Identity), got %d", found)
 	}
 }
 
