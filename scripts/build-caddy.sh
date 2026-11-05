@@ -4,8 +4,7 @@
 #   scripts/build-caddy.sh <image-ref>
 #
 # Shared by ci.yml (build + scan only) and deploy.yml (which pushes the ref
-# afterwards). Needs docker and go (for the Trivy version resolver). Fails on
-# any fixable HIGH/CRITICAL finding.
+# afterwards). Needs docker. Fails on any fixable HIGH/CRITICAL finding.
 #
 # Trivy gets the image over stdin (`docker save | docker run -i`) instead of a
 # bind-mounted docker socket: on the Gitea runners the daemon is rootless
@@ -36,12 +35,10 @@ DOCKER_BUILDKIT=1 docker build \
   -t "$ref" \
   -f Containerfile .
 
-# versions.env pins a Trivy minor; the helper resolves its highest patch from
-# Docker Hub and falls back to TRIVY_FALLBACK on any lookup failure.
-trivy_tag="$(cd cmd/trivy-version && go run .)"
-echo "Scanning ${ref} with aquasec/trivy:${trivy_tag}"
+# versions.env pins the Trivy image by digest.
+echo "Scanning ${ref} with ${TRIVY_IMAGE}"
 
-docker save "$ref" | docker run --rm -i --entrypoint sh "docker.io/aquasec/trivy:${trivy_tag}" -c '
+docker save "$ref" | docker run --rm -i --entrypoint sh "$TRIVY_IMAGE" -c '
   set -e
   cat >/tmp/image.tar
   trivy image --input /tmp/image.tar \

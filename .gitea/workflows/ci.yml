@@ -91,8 +91,5 @@ jobs:
     runs-on: docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.gitea/actions/setup
-        with:
-          tools: go
       - name: Build + Trivy scan (no push)
         run: scripts/build-caddy.sh "vaultwarden-caddy:ci-${GITHUB_SHA:0:12}"

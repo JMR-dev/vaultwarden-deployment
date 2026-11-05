@@ -15,8 +15,8 @@ maintenance notes live in
 1. Sources `versions.env` and builds `Containerfile` with the version args.
    The build fails if either plugin is missing from `caddy list-modules` (a
    dropped `--with` otherwise yields a Caddy that only fails at runtime).
-2. Scans the image with Trivy (minor pinned in `versions.env`, patch resolved
-   by `cmd/trivy-version`) and fails on fixable HIGH/CRITICAL findings.
+2. Scans the image with Trivy (the image pinned by digest in `versions.env`)
+   and fails on fixable HIGH/CRITICAL findings.
 
 `.gitea/workflows/ci.yml` runs it on every branch without pushing.
 `.gitea/workflows/deploy.yml` runs it and pushes to Artifact Registry
