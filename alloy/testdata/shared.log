@@ -275,5 +275,8 @@ keep:316 {unit=alloy.service level=info} systemd[1]: Started user@3141592650.ser
 keep:317 {unit=alloy.service level=info} systemd[1]: Starting user-runtime-dir@3141592652.service - User Runtime Directory /run/user/3141592659...
 keep:318 {unit=alloy.service level=info} systemd[1]: user@1000000000.service: Consumed 1.234s CPU time.
 same:190 {unit=alloy.service level=info} systemd[1]: Started user-runtime-dir@1000.service - User Runtime Directory /run/user/1000.
+keep:333 {unit=alloy.service level=info} systemd[1]: run-user-3141592651.mount: Deactivated successfully.
+keep:334 {unit=alloy.service level=info} systemd[1]: Unmounting run-user-3141592652.mount - /run/user/3141592652...
+same:192 {unit=alloy.service level=info} systemd[1]: run-user-1000.mount: Deactivated successfully.
 same:191 {unit=alloy.service level=info} systemd[1]: user@999999999.service: Consumed 1.234s CPU time.
 same:59 {unit=alloy.service level=info} 2026-10-26 03:12:45 mimir ingester ring healthy, 150000 series

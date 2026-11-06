@@ -629,10 +629,11 @@ loki.process "scrub" {
 
 	// OS Login uids, which stand for their users and run to 10 digits: pam's
 	// uid= (auid= and euid= hold the same text), systemd's "UID <n>", its
-	// user-<n>.slice, user@<n>.service and user-runtime-dir@<n>.service, and
-	// /run/user/<n>. The unit's name stays. root and other small uids stay.
+	// user-<n>.slice, user@<n>.service and user-runtime-dir@<n>.service,
+	// /run/user/<n>, and the run-user-<n>.mount unit systemd mounts it as (each
+	// logout logs it). The unit's name stays. root and other small uids stay.
 	stage.replace {
-		expression = `uid=(\d{10,})\b|\bUID (\d{10,})\b|\buser-(\d{10,})\.slice|\buser(?:-runtime-dir)?@(\d{10,})\.service|/run/user/(\d{10,})\b`
+		expression = `uid=(\d{10,})\b|\bUID (\d{10,})\b|\buser-(\d{10,})\.slice|\buser(?:-runtime-dir)?@(\d{10,})\.service|/run/user/(\d{10,})\b|\brun-user-(\d{10,})\.mount\b`
 		replace    = "[REDACTED-UID]"
 	}
 
